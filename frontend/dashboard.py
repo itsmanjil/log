@@ -82,19 +82,6 @@ class Dashboard:
             self.db.delete(query, value)
             messagebox.showinfo("Delete Status", "Deleted Succesfuly")
 
-    # def search(self):
-    #     uname = self.ent_uname.get()
-    #     sql = "Select * from user_tbl where Username=%s"
-    #     search = self.db.select(sql,uname)
-    #     for s in search:
-    #         self.s1 = s[1]
-    #         self.s1 = s[1]
-    #         self.s2 = s[2]
-    #         self.s3 = s[3]
-    #         self.s4 = s[4]
-    #         self.s5 = s[5]
-    #         self.s6 = s[6]
-
 
 root = Tk()
 Dashboard(root)

@@ -25,9 +25,6 @@ class Login_Page:
         main_frame = Frame(self.root, bg='silver', bd=5, relief=RAISED)
         main_frame.place(x=250, y=200, width=400, height=250)
 
-        img = ImageTk.PhotoImage(Image.open(r"c:\Users\HP\Pictures\primevideo-seo-logo-square.png"))
-        image_frame = Label(self.root, image=img)
-        image_frame.place(x=350, y=45, width=200, height=150)
 
         lbl_username = Label(main_frame, text='User Name:', font=('arial', 15, 'bold'), \
                              fg='Black', bg='silver')

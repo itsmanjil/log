@@ -47,7 +47,7 @@ class Register_Page:
                         background='silver')
         lbl_cmb.grid(row=3, column=0)
 
-        self.cmb_gender = ttk.Combobox(main_frame, font=('arial', 15, 'bold'))
+        self.cmb_gender = ttk.Combobox(main_frame, font=('arial', 15, 'bold'),state = "readonly" )
         self.cmb_gender['values'] = ('Male', 'Female', 'Others')
         self.cmb_gender.grid(row=3, column=1)
 
