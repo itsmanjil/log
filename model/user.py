@@ -1,9 +1,10 @@
 class User:
-    def __init__(self, uname, passw, add, gen):
+    def __init__(self, uname, passw, add, gen, phone):
         self.__username = uname
         self.__password = passw
         self.__address = add
         self.__gen = gen
+        self.__phone = phone
 
     def set_username(self, uname):
         self.__username = uname
@@ -28,3 +29,12 @@ class User:
 
     def get_gender(self):
         return self.__gen
+
+    def set_phone(self,phone):
+        self.__phone = phone
+
+    def get_phone(self):
+        return self.__phone
+
+
+
