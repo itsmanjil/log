@@ -26,6 +26,7 @@ class Login_Page:
         main_frame.place(x=250, y=200, width=400, height=250)
 
 
+
         lbl_username = Label(main_frame, text='User Name:', font=('arial', 15, 'bold'), \
                              fg='Black', bg='silver')
         lbl_username.grid(row=0, column=0, padx=10, pady=10)
@@ -69,7 +70,7 @@ class Login_Page:
         if self.ent_username.get() == '' or self.ent_password.get() == '':
             messagebox.showerror('Error', 'plz fill the empty field')
         else:
-            query = "select * from user_tbl where Username=%s and Password=%s"
+            query = "select * from new_table where Username=%s and Password=%s"
             values = (uname, passw)
             rows = self.db.select(query, values)
             data = []
