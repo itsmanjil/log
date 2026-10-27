@@ -51,4 +51,24 @@ nothing is marked.
 - **The macro shows an error:** take a photo of the message. Raw Switch Data and PROBLEM IN ATM are left unchanged if the file is not a valid export.
 - You can always go back to copy-paste plus the original **Run 1 PM Report** / **Run 8 PM Report** macros; they are unchanged.
 
+## Mail branches about cash dispenser problems
+
+`Module_DispenserMail.bas` adds the **Mail Dispenser Problems** button (CONTROL sheet, under Run 1 PM / Run 8 PM).
+
+1. After the report runs, staff set **Issue in ATM** to `PROBLEM IN CASH DISPENSER.` as usual.
+2. Click **Mail Dispenser Problems**. It reads today's open daily report and takes every ATM whose latest row
+   has that issue and no ATM-UP date.
+3. For each one it opens a filled-in new mail in Outlook on the web (Chrome): branch address, subject, message.
+   Check it and click **Send**. Nothing is sent automatically.
+
+First click creates the **ATM EMAIL** sheet (every TOTAL terminal). Fill in once:
+- column C: the branch email for each terminal (column D: extra CC),
+- B3: the Outlook web address from Chrome's address bar (e.g. `https://outlook.office.com/mail/`; for a bank
+  server something like `https://mail.<bank>/owa/`). Empty = the PC's default mail program,
+- B4: an address always copied (optional); B5 / B6: subject and message, with `{TERMINAL} {BRANCH} {DATE} {TIME}
+  {VENDOR} {REMARKS}`.
+
+An ATM is mailed once per day (column E records when); clear that cell to mail it again. ATMs without an email
+address are listed and skipped.
+
 Macros: `ImportWebDataAndRun1PMReport`, `ImportWebDataAndRun8PMReport`, `ImportWebDataOnly` (fills the two sheets without running the report).
