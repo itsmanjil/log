@@ -18,6 +18,11 @@ Option Explicit
 Private Const EXPORT_FILE_PATTERN As String = "ATM_SWITCH_DATA_*.xlsx"
 Private Const FRESH_MINUTES As Long = 60   ' newer files are imported without asking
 Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}"
+Private Const ARCHIVE_FOLDER As String = "ATM SWITCH DATA"  ' next to this workbook
+Private Const MISSING_LABEL As String = "NOT IN SWITCH DATA"
+Private Const MAX_MISSING_SHARE As Double = 0.1  ' more missing than this = filtered export, mark none
+
+Private mImportNote As String  ' what the last import did, shown to the user
 
 Public Sub ImportWebDataAndRun1PMReport()
     If ImportWebExport() Then Run1PMReport
@@ -57,6 +62,7 @@ Private Function ImportWebExport() As Boolean
     End If
 
     ImportWebExport = ImportWebExportFile(exportFile)
+    If ImportWebExport And Len(mImportNote) > 0 Then MsgBox mImportNote, vbInformation, "Import Website Data"
 End Function
 
 ' Copies both sheets of exportFile into this workbook. No questions asked;
@@ -84,10 +90,14 @@ Public Function ImportWebExportFile(ByVal exportFile As String) As Boolean
     msg = ExportProblem(wbSource)
     If Len(msg) > 0 Then Err.Raise vbObjectError + 701, , msg
 
+    mImportNote = vbNullString
     CopySheetValues wbSource.Worksheets("Raw Switch Data"), ThisWorkbook.Worksheets("Raw Switch Data")
     CopySheetValues wbSource.Worksheets("PROBLEM IN ATM"), ThisWorkbook.Worksheets("PROBLEM IN ATM")
     wbSource.Close SaveChanges:=False
     Set wbSource = Nothing
+
+    MarkAtmsMissingFromExport
+    ArchiveExport exportFile
 
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
@@ -106,6 +116,119 @@ SafeFail:
     MsgBox "Error: " & msg & vbCrLf & vbCrLf & "Raw Switch Data and PROBLEM IN ATM were not changed.", _
            vbExclamation, "Import Website Data"
 End Function
+
+' An ATM deleted from the website is still on the TOTAL list, and the refresh
+' keeps a TOTAL row's old values when its terminal is not in the new data - so
+' it would stay in CASH LOW IN ATM / ATM NOT WORKING with stale figures. Mark
+' such rows NOT IN SWITCH DATA (no cash / idle values) so the report skips
+' them. Skipped when many ATMs are missing: that means a filtered export.
+Private Sub MarkAtmsMissingFromExport()
+    Dim wsRaw As Worksheet, wsTotal As Worksheet
+    Dim present As Object
+    Dim r As Long, tidCol As Long, headerRow As Long, lastRow As Long
+    Dim terminal As String, missingList As String
+    Dim totalCount As Long, missingCount As Long
+    Dim data As Variant
+
+    Set wsRaw = ThisWorkbook.Worksheets("Raw Switch Data")
+    Set wsTotal = ThisWorkbook.Worksheets("TOTAL")
+
+    For headerRow = 1 To 10
+        tidCol = HeaderColumn(wsRaw, headerRow, "TID (PID)")
+        If tidCol > 0 Then Exit For
+    Next headerRow
+    If tidCol = 0 Then Exit Sub
+
+    Set present = CreateObject("Scripting.Dictionary")
+    present.CompareMode = 1
+    lastRow = wsRaw.Cells(wsRaw.Rows.Count, tidCol).End(xlUp).Row
+    For r = headerRow + 1 To lastRow
+        terminal = TerminalOf(wsRaw.Cells(r, tidCol).Value)
+        If Len(terminal) > 0 Then present(terminal) = True
+    Next r
+
+    lastRow = wsTotal.Cells(wsTotal.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Or present.Count = 0 Then Exit Sub
+    data = wsTotal.Range("B2:H" & lastRow).Value  ' B terminal ... H remarks 2
+
+    For r = 1 To UBound(data, 1)
+        terminal = TerminalOf(data(r, 1))
+        If Len(terminal) > 0 Then
+            totalCount = totalCount + 1
+            If Not present.Exists(terminal) Then
+                missingCount = missingCount + 1
+                missingList = missingList & vbCrLf & "    " & terminal & "  " & CStr(data(r, 2))
+            End If
+        End If
+    Next r
+    If missingCount = 0 Then Exit Sub
+
+    If missingCount > totalCount * MAX_MISSING_SHARE Then
+        mImportNote = missingCount & " of " & totalCount & " ATMs on the TOTAL list are not in this export. " & _
+                      "That is too many to be deleted ATMs - was a filter on in the website?" & vbCrLf & _
+                      "They were left unchanged."
+        Exit Sub
+    End If
+
+    For r = 1 To UBound(data, 1)
+        terminal = TerminalOf(data(r, 1))
+        If Len(terminal) > 0 Then
+            If Not present.Exists(terminal) Then
+                data(r, 3) = Empty           ' D cash balance
+                data(r, 4) = MISSING_LABEL   ' E last used
+                data(r, 5) = MISSING_LABEL   ' F remarks 1
+                data(r, 6) = Empty           ' G not working hours
+                data(r, 7) = MISSING_LABEL   ' H remarks 2
+            End If
+        End If
+    Next r
+    On Error Resume Next
+    wsTotal.Unprotect  ' the refresh protects it again
+    On Error GoTo 0
+    wsTotal.Range("B2:H" & lastRow).Value = data
+
+    mImportNote = missingCount & " ATM(s) on the TOTAL list are not on the website any more, so they are " & _
+                  "left out of CASH LOW IN ATM and ATM NOT WORKING:" & missingList & vbCrLf & vbCrLf & _
+                  "If an ATM was removed for good, delete its row from the TOTAL sheet."
+End Sub
+
+' "PRV23301 (199735)" -> "PRV23301"; empty if not a PRV terminal.
+Private Function TerminalOf(ByVal v As Variant) As String
+    Dim t As String
+    If IsError(v) Then Exit Function
+    t = UCase$(Trim$(CStr(v)))
+    If InStr(t, "(") > 0 Then t = Trim$(Left$(t, InStr(t, "(") - 1))
+    If InStr(t, " ") > 0 Then t = Left$(t, InStr(t, " ") - 1)
+    If t Like "PRV#*" Then TerminalOf = t
+End Function
+
+' Move the imported file out of Downloads into ATM SWITCH DATA\yyyy\MONTH next to
+' this workbook, so Downloads stays clean and the same file is never imported twice.
+Private Sub ArchiveExport(ByVal exportFile As String)
+    Dim folder As String, target As String, baseName As String
+    Dim n As Long
+
+    On Error GoTo Done
+    If Len(ThisWorkbook.Path) = 0 Then Exit Sub
+    folder = ThisWorkbook.Path & "\" & ARCHIVE_FOLDER
+    If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
+    folder = folder & "\" & Format$(Date, "yyyy")
+    If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
+    folder = folder & "\" & UCase$(Format$(Date, "mmmm"))
+    If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
+
+    baseName = Mid$(exportFile, InStrRev(exportFile, "\") + 1)
+    If StrComp(Left$(exportFile, InStrRev(exportFile, "\") - 1), folder, vbTextCompare) = 0 Then Exit Sub
+    target = folder & "\" & baseName
+    Do While Len(Dir$(target)) > 0
+        n = n + 1
+        target = folder & "\" & Left$(baseName, Len(baseName) - 5) & " (" & n & ").xlsx"
+    Loop
+    CreateObject("Scripting.FileSystemObject").MoveFile exportFile, target  ' works across drives / shared folders
+    Exit Sub
+Done:
+    ' Could not move it (e.g. no write access): leave it in Downloads.
+End Sub
 
 ' Empty string if wb looks like an atm_export.js file, otherwise the reason.
 Private Function ExportProblem(ByVal wb As Workbook) As String

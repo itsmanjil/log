@@ -25,7 +25,16 @@ saves a file to Downloads; the macro only reads that file. Nothing is sent anywh
 2. In `DAILY_ATM_STATUS_V3.xlsm` click **Run 1 PM Report** (or 8 PM). The report is built exactly as before.
 
 An export made in the last 60 minutes is used without asking. An older one (or one not from today) asks first.
-The macro looks in your Downloads folder; if no export is there it lets you pick the file.
+The macro looks in the Downloads folder of the PC you are working on (also when the workbook is opened from a
+shared folder on another PC); if no export is there it lets you pick the file.
+
+After importing, the file is moved from Downloads to `ATM SWITCH DATA\<year>\<MONTH>\` in the workbook's folder.
+(A browser bookmark is not allowed to choose where Chrome saves files, so the macro files them.)
+
+ATMs deleted from the website are still on the TOTAL list. If 10% or fewer of the TOTAL ATMs are missing from the
+export, they are marked `NOT IN SWITCH DATA` on TOTAL, left out of CASH LOW IN ATM / ATM NOT WORKING, and listed in
+a message. Delete the row from TOTAL if the ATM was removed for good. If more are missing (a website filter was on)
+nothing is marked.
 
 ## First real run: check these
 
