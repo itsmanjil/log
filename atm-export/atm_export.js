@@ -47,11 +47,15 @@
   }
 
   // STA dot -> 'RED' (offline / problem) or 'GREEN', from its image name, tooltip or
-  // class (e.g. red.png, "Offline"), falling back to the dot's actual colour.
-  const RED_WORDS = ['red', 'offline', 'off', 'down', 'error', 'err', 'fail', 'failed', 'closed', 'alarm', 'critical'];
-  const GREEN_WORDS = ['green', 'online', 'on', 'ok', 'up', 'working', 'active'];
+  // class (e.g. SmartVista's /image/atm/open.png "Open"), falling back to the dot's colour.
+  const RED_WORDS = ['red', 'offline', 'off', 'down', 'error', 'err', 'fail', 'failed', 'closed', 'close', 'alarm',
+    'critical', 'outofservice', 'out', 'disconnected', 'unavailable', 'fault', 'inactive'];
+  const GREEN_WORDS = ['green', 'open', 'online', 'on', 'ok', 'up', 'working', 'active', 'inservice'];
+  const staIcons = new Set();  // every kind of STA icon seen, for the diagnostic file
   function statusOf(td) {
     const els = [td, ...td.querySelectorAll('*')];
+    staIcons.add([...td.querySelectorAll('img')].map(i => `${(i.getAttribute('src') || '').split('/').pop()} ` +
+      `"${i.getAttribute('title') || i.getAttribute('alt') || ''}"`).join(' + ') || 'no image');
     const words = new Set(els.flatMap(e => [e.getAttribute('title'), e.getAttribute('alt'), e.getAttribute('src'),
       e.getAttribute('class'), getComputedStyle(e).backgroundImage].join(' ').toLowerCase().split(/[^a-z]+/)));
     if (RED_WORDS.some(w => words.has(w))) return 'RED';
@@ -136,45 +140,65 @@
   }
 
   // ---------- Column check: same lookups as the macro (Module1 BuildSwitchReportFromRaw) ----------
-  const up = v => clean(String(v || '')).toUpperCase();
+  // Header text compared on letters/digits only, so odd spaces or hidden characters
+  // on the website don't matter; the file then gets the exact names the macro looks for.
+  const key = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   function locateColumns(header) {
-    const find = (row, names) => row.findIndex(v => names.includes(up(v)));
+    const find = (row, names) => row.findIndex(v => names.includes(key(v)));
     for (let r = 0; r < header.length; r++) {
       const row = header[r];
-      const name = find(row, ['NAME']), tid = find(row, ['TID (PID)', 'TERMINAL ID']);
-      const disp = find(row, ['DISPENSER', 'IDLE TIME (LAST USED)']);
-      if (name < 0 || tid < 0 || disp < 0 || find(row, ['NPR', 'REMAINING BALANCE']) < 0) continue;
+      const name = find(row, ['NAME']), tid = find(row, ['TIDPID', 'TERMINALID']);
+      const disp = find(row, ['DISPENSER', 'IDLETIMELASTUSED']);
+      if (name < 0 || tid < 0 || disp < 0 || find(row, ['NPR', 'REMAININGBALANCE']) < 0) continue;
       // FindAvailableBalanceColumn: AVAILABLE BALANCE label (or the label above), else first NPR not under REMAINING
       let avail = -1, firstNpr = -1, freeNpr = -1;
       for (let c = 0; c < row.length && avail < 0; c++) {
-        const cat = r > 0 ? up(header[r - 1][c]) : '';
-        if (up(row[c]).includes('AVAILABLE BALANCE') || cat.includes('AVAILABLE BALANCE')) avail = c;
-        else if (up(row[c]) === 'NPR') {
+        const cat = r > 0 ? key(header[r - 1][c]) : '';
+        if (key(row[c]).includes('AVAILABLEBALANCE') || cat.includes('AVAILABLEBALANCE')) avail = c;
+        else if (key(row[c]) === 'NPR') {
           if (firstNpr < 0) firstNpr = c;
           if (!cat.includes('REMAINING') && freeNpr < 0) freeNpr = c;
         }
       }
       if (avail < 0) avail = freeNpr >= 0 ? freeNpr : firstNpr;
-      return { name, tid, avail, disp };
+      return { row: r, name, tid, avail, disp };
     }
     return null;
   }
 
+  // Write the header names exactly as the macro compares them.
+  function canonicalHeader(header, cols) {
+    const out = header.map(r => r.slice());
+    const r = cols.row, names = out[r];
+    names[cols.name] = 'NAME'; names[cols.tid] = 'TID (PID)'; names[cols.disp] = 'DISPENSER';
+    names.forEach((v, c) => { if (key(v) === 'NPR') names[c] = 'NPR'; });
+    if (r > 0) out[r - 1].forEach((v, c) => {
+      if (key(v).includes('AVAILABLEBALANCE')) out[r - 1][c] = 'AVAILABLE BALANCE';
+      else if (key(v).includes('REMAININGBALANCE')) out[r - 1][c] = 'REMAINING BALANCE';
+    });
+    if (key(names[cols.avail]) !== 'NPR' && !key(names[cols.avail]).includes('AVAILABLEBALANCE')) names[cols.avail] = 'NPR';
+    return out;
+  }
+
   const TID_RE = /^PRV\d+/i;
-  const MONEY_RE = /^-?[\d`', ]+(\.\d+)?$/;
+  const MONEY_RE = /^-?[\d`'’´, ]+(\.\d+)?$/;
   const IDLE_RE = /\b(days?|hours?|hrs?|mins?|minutes?|secs?|seconds?|never)\b/i;
+  const BLANK_RE = /^(-+|n\/?a|null|none)$/i;  // placeholders counted as empty
+  const pct = x => Math.round(x * 100) + '%';
+  function share(data, c, re) {
+    const filled = data.map(r => String(r[c] || '')).filter(v => v && !BLANK_RE.test(v));
+    return { filled: filled.length / data.length, match: filled.length ? filled.filter(v => re.test(v)).length / filled.length : 0 };
+  }
   function checkColumns(cols, data) {
     if (!cols) return ['header row with NAME / TID (PID) / NPR / DISPENSER not found'];
     const problems = [];
-    const share = (c, re) => {
-      const filled = data.map(r => String(r[c] || '')).filter(v => v);
-      return { filled: filled.length / data.length, match: filled.length ? filled.filter(v => re.test(v)).length / filled.length : 0 };
-    };
-    const tid = share(cols.tid, TID_RE), name = share(cols.name, /./), money = share(cols.avail, MONEY_RE), idle = share(cols.disp, IDLE_RE);
-    if (tid.filled < 0.9 || tid.match < 0.9) problems.push('TID (PID) column does not hold PRV terminal IDs');
-    if (name.filled < 0.9 || data.filter(r => TID_RE.test(String(r[cols.name] || ''))).length > data.length * 0.1) problems.push('NAME column does not hold ATM names');
-    if (money.filled < 0.3 || money.match < 0.95) problems.push('AVAILABLE BALANCE / NPR column does not hold amounts');
-    if (idle.filled < 0.5 || idle.match < 0.95) problems.push('DISPENSER column does not hold idle times');
+    const tid = share(data, cols.tid, TID_RE), name = share(data, cols.name, /./);
+    const money = share(data, cols.avail, MONEY_RE), idle = share(data, cols.disp, IDLE_RE);
+    const at = c => ` (column ${c + 1}: ${pct(share(data, c, /./).filled)} filled`;
+    if (tid.filled < 0.9 || tid.match < 0.9) problems.push(`TID (PID) column does not hold PRV terminal IDs${at(cols.tid)}, ${pct(tid.match)} IDs)`);
+    if (name.filled < 0.9 || data.filter(r => TID_RE.test(String(r[cols.name] || ''))).length > data.length * 0.1) problems.push(`NAME column does not hold ATM names${at(cols.name)})`);
+    if (money.filled < 0.3 || money.match < 0.9) problems.push(`AVAILABLE BALANCE / NPR column does not hold amounts${at(cols.avail)}, ${pct(money.match)} amounts)`);
+    if (idle.filled < 0.5 || idle.match < 0.9) problems.push(`DISPENSER column does not hold idle times${at(cols.disp)}, ${pct(idle.match)} times)`);
     return problems;
   }
 
@@ -182,8 +206,8 @@
   // over the columns whose contents match (terminal IDs, amounts, idle times).
   function headerFromContent(data, width) {
     const score = re => Array.from({ length: width }, (_, c) => {
-      const filled = data.map(r => String(r[c] || '')).filter(v => v);
-      return filled.length >= data.length * 0.3 && filled.every(v => re.test(v)) ? filled.length : 0;
+      const s = share(data, c, re);
+      return s.filled >= 0.3 && s.match >= 0.9 ? s.filled : 0;
     });
     const tidScore = score(TID_RE);
     const tid = tidScore.indexOf(Math.max(...tidScore));
@@ -210,6 +234,8 @@
 
   // Table structure for troubleshooting: tags, spans, classes, image names and
   // header text only - never ATM names, terminal IDs, addresses or balances.
+  const showText = v => String(v).replace(/[^\x20-\x7E]/g, ch => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+  const notes = [];  // extra findings for the diagnostic file
   function diagnose(table, reason) {
     const shape = td => {
       const t = clean(td.innerText);
@@ -234,6 +260,8 @@
       if (sta) lines.push('STA cell HTML: ' + sta.cells[0].outerHTML.replace(/\s+/g, ' ')
         .replace(/(title|alt)="([^"]{21,})"/g, '$1="(long text)"').slice(0, 600));
     }
+    if (staIcons.size) lines.push('STA icons seen: ' + [...staIcons].join(' | '));
+    lines.push(...notes);
     download(`ATM_EXPORT_DIAGNOSTIC_${stamp}.txt`, new Blob([lines.join('\r\n')], { type: 'text/plain' }));
     alert(`${reason}\n\nNothing was exported. A file ATM_EXPORT_DIAGNOSTIC_${stamp}.txt was saved in Downloads ` +
           '(table layout only, no ATM data). Send a photo of it so the script can be fixed.');
@@ -249,8 +277,8 @@
   const add = rows => {
     let added = 0;
     for (const r of rows) {
-      const key = r.join('~');
-      if (!seen.has(key)) { seen.add(key); all.push(r); added++; }
+      const rowKey = r.join('~');
+      if (!seen.has(rowKey)) { seen.add(rowKey); all.push(r); added++; }
     }
     return added;
   };
@@ -272,21 +300,23 @@
   if (!all.length) { diagnose(findTable(), 'No ATM rows found.'); return; }
 
   // ---------- Header rows: the website's own, else rebuilt from the cell contents ----------
-  const width = Math.max(...all.map(r => r.length), ...websiteHeader.map(r => r.length));
+  const lastHeader = readHeader(findTable());
+  const width = Math.max(...all.map(r => r.length), ...websiteHeader.map(r => r.length), ...lastHeader.map(r => r.length));
   const fit = r => Array.from({ length: width }, (_, i) => r[i] === undefined ? '' : r[i]);
   const data = all.map(fit);
-  let header = websiteHeader.map(fit);
-  let headerSource = 'website header';
-  let problems = checkColumns(locateColumns(header), data);
-  if (problems.length) {
-    console.log('Website header not usable: ' + problems.join('; '));
-    const rebuilt = headerFromContent(data, width);
-    if (rebuilt) {
-      const p2 = checkColumns(locateColumns(rebuilt), data);
-      if (!p2.length) { header = rebuilt; headerSource = 'columns detected from the data'; problems = []; }
-    }
+  const candidates = [['website header', websiteHeader], ['website header (last page)', lastHeader], ['columns detected from the data', headerFromContent(data, width)]];
+  let header = null, headerSource = '', problems = [];
+  for (const [source, rows] of candidates) {
+    const h = rows ? rows.map(fit) : null;
+    const p = h ? checkColumns(locateColumns(h), data) : ['could not detect the columns'];
+    notes.push(`Check "${source}": ${p.length ? p.join('; ') : 'OK'}`);
+    if (h) h.forEach((r, i) => notes.push(`    ${source} row ${i}: ${r.map(v => `"${showText(v)}"`).join(' ')}`));
+    if (!p.length) { header = h; headerSource = source; break; }
+    if (!problems.length) problems = p;
   }
-  if (problems.length) { diagnose(findTable(), 'The table columns are not what the report expects: ' + problems.join('; ') + '.'); return; }
+  notes.push(`ATMs read: ${data.length} from ${page} page(s), row widths: ${[...new Set(all.map(r => r.length))].join(',')}`);
+  if (!header) { diagnose(findTable(), 'The table columns are not what the report expects: ' + problems.join('; ') + '.'); return; }
+  header = canonicalHeader(header, locateColumns(header));
   const cols = locateColumns(header);
   console.log(`Columns (${headerSource}): NAME=${cols.name + 1} TID=${cols.tid + 1} NPR=${cols.avail + 1} DISPENSER=${cols.disp + 1} of ${width}`);
 
