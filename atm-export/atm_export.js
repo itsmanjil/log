@@ -17,6 +17,9 @@
   const PAGE_TIMEOUT_MS = 20000;  // how long to wait for a page to load
   const PAGER = '.rich-datascr, .dr-dscr, .ui-paginator, [class*="datascr"], [class*="paginator"]';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // The ATM page loads Prototype.js (RichFaces), which replaces Array.from and
+  // Array.prototype.reduce with incompatible versions - so build arrays by hand.
+  const range = (n, f) => { const a = []; for (let i = 0; i < n; i++) a.push(f(i)); return a; };
   const clean = s => (s || '').replace(/\s+/g, ' ').trim();
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -58,6 +61,9 @@
       `"${i.getAttribute('title') || i.getAttribute('alt') || ''}"`).join(' + ') || 'no image');
     const words = new Set(els.flatMap(e => [e.getAttribute('title'), e.getAttribute('alt'), e.getAttribute('src'),
       e.getAttribute('class'), getComputedStyle(e).backgroundImage].join(' ').toLowerCase().split(/[^a-z]+/)));
+    // SmartVista states Supervisor / Replenishment: staff working on the ATM, not red
+    if (words.has('supervisor')) return 'SUPERVISOR';
+    if (words.has('replenishment')) return 'REPLENISHMENT';
     if (RED_WORDS.some(w => words.has(w))) return 'RED';
     if (GREEN_WORDS.some(w => words.has(w))) return 'GREEN';
     for (const e of els) {
@@ -92,7 +98,7 @@
         c += cs;
       }
     });
-    return grid.map(r => Array.from(r, v => v === undefined ? '' : v));
+    return grid.map(r => range(r.length, i => r[i] === undefined ? '' : r[i]));
   }
 
   const readRows = table => toGrid([...table.rows].filter(isDataRow), (td, c) => (c === 0 && statusOf(td)) || cellValue(td));
@@ -106,28 +112,41 @@
     return rows.length ? rows[0].join('~') + '##' + rows[rows.length - 1].join('~') + '#' + rows.length : '';
   };
 
-  // Find the clickable control for page `n`, or a "next" arrow as fallback.
-  function findPageControl(n) {
+  // Find the clickable control for page `n`, or the single-step "next" arrow as fallback
+  // (never the "»" fast-forward, which jumps several pages and would skip ATMs).
+  const pagerScopes = () => {
     const pagers = document.querySelectorAll(PAGER + ', [id*="scroller" i], [id*="pager" i]');
-    const scopes = pagers.length ? [...pagers] : [document.body];
-    for (const scope of scopes) {
+    return pagers.length ? [...pagers] : [document.body];
+  };
+  function findPageControl(n) {
+    for (const scope of pagerScopes()) {
       const els = [...scope.querySelectorAll('td, a, span, button, li')];
       const num = els.find(e => clean(e.innerText) === String(n) && e.children.length === 0);
       if (num) return num;
     }
-    for (const scope of scopes) {
+    for (const scope of pagerScopes()) {
       const els = [...scope.querySelectorAll('td, a, span, button, li')];
       const next = els.find(e => {
         const t = clean(e.innerText).toLowerCase();
         const cls = (e.className || '').toString().toLowerCase();
+        const onclick = e.getAttribute('onclick') || '';
         const disabled = /dis|inact-btn|ui-state-disabled/.test(cls);
-        return !disabled && (['›', '»', '>', '>>', 'next', 'fastforward'].includes(t) || /(^|[-_ ])next/.test(cls) ||
-               (e.getAttribute('onclick') || '').includes("'next'") || (e.getAttribute('onclick') || '').includes("'fastforward'"));
+        return !disabled && (['›', '>', 'next'].includes(t) || /(^|[-_ ])next/.test(cls) || onclick.includes("'next'"));
       });
       if (next) return next;
     }
     return null;
   }
+  // Page number the page bar marks as current, if it shows one.
+  function activePage() {
+    for (const scope of pagerScopes()) {
+      const el = [...scope.querySelectorAll('td, a, span, li')].find(e =>
+        /(^|[-_ ])(act|active|current|selected)\b/.test((e.className || '').toString().toLowerCase()) && /^\d+$/.test(clean(e.innerText)));
+      if (el) return +clean(el.innerText);
+    }
+    return 0;
+  }
+  const pagerText = () => pagerScopes().map(p => `"${clean(p.innerText)}"`).join(' / ');
 
   async function waitForChange(oldSig) {
     const start = Date.now();
@@ -205,7 +224,7 @@
   // Fallback when the website's own header rows can't be used: put the header names
   // over the columns whose contents match (terminal IDs, amounts, idle times).
   function headerFromContent(data, width) {
-    const score = re => Array.from({ length: width }, (_, c) => {
+    const score = re => range(width, c => {
       const s = share(data, c, re);
       return s.filled >= 0.3 && s.match >= 0.9 ? s.filled : 0;
     });
@@ -261,6 +280,8 @@
         .replace(/(title|alt)="([^"]{21,})"/g, '$1="(long text)"').slice(0, 600));
     }
     if (staIcons.size) lines.push('STA icons seen: ' + [...staIcons].join(' | '));
+    const bar = pagerScopes()[0];
+    if (bar && bar !== document.body) lines.push('Page bar HTML: ' + bar.outerHTML.replace(/\s+/g, ' ').slice(0, 1200));
     lines.push(...notes);
     download(`ATM_EXPORT_DIAGNOSTIC_${stamp}.txt`, new Blob([lines.join('\r\n')], { type: 'text/plain' }));
     alert(`${reason}\n\nNothing was exported. A file ATM_EXPORT_DIAGNOSTIC_${stamp}.txt was saved in Downloads ` +
@@ -272,37 +293,79 @@
   if (!table) { alert('Could not find the data table on this page.'); return; }
   const websiteHeader = readHeader(table);
 
-  const seen = new Set();
-  const all = [];
-  const add = rows => {
+  // One entry per terminal ID, so a row seen twice (the page auto-refreshes and can
+  // jump back to page 1 while we read) is counted once; the latest values win.
+  // Rows keep the website's order (page, then position) even when pages are read out of order.
+  const byTid = new Map();
+  const add = (rows, pageNo) => {
     let added = 0;
-    for (const r of rows) {
-      const rowKey = r.join('~');
-      if (!seen.has(rowKey)) { seen.add(rowKey); all.push(r); added++; }
-    }
+    rows.forEach((r, i) => {
+      const id = r.find(v => /^PRV\d+/i.test(String(v))) || r.join('~');
+      if (!byTid.has(id)) added++;
+      byTid.set(id, { r, order: (pageNo || 9999) * 10000 + i });
+    });
     return added;
   };
+  // The header says how many ATMs the table holds ("FILTERED 264 ATM") - all must be read.
+  const expected = +((websiteHeader.flat().map(String).join(' ').match(/FILTERED\s+(\d+)/i) || [])[1] || 0);
 
-  let page = 1;
-  console.log(`Page 1: ${add(readRows(table))} rows`);
-  while (page < MAX_PAGES) {
-    const ctl = findPageControl(page + 1);
-    if (!ctl) break;
-    const before = signature();
-    ctl.click();
-    if (!(await waitForChange(before))) { console.log('No more pages (table did not change).'); break; }
-    page++;
-    const added = add(readRows(findTable()));
-    console.log(`Page ${page}: ${added} new rows`);
-    if (added === 0) break; // landed on a page we already have -> finished
+  // Next page to open: the lowest page number shown that we have not read yet; if none is
+  // shown (e.g. an auto-refresh jumped back to page 1), the highest page number shown, to
+  // move the page bar forward quickly; else "next".
+  const visited = new Set([activePage() || 1]);
+  let lastTried = false;
+  function nextControl() {
+    for (const scope of pagerScopes()) {
+      const nums = [...scope.querySelectorAll('td, a, span, button, li')]
+        .filter(e => e.children.length === 0 && /^\d+$/.test(clean(e.innerText)))
+        .map(e => ({ el: e, page: +clean(e.innerText) }))
+        .sort((a, b) => a.page - b.page);
+      const unread = nums.find(n => !visited.has(n.page));
+      if (unread) return unread;
+      if (!lastTried) {  // unread pages are beyond the page bar: jump straight to the end
+        const last = [...scope.querySelectorAll('td, a, span, button, li')].find(e =>
+          e.children.length === 0 && ['last', '»»', '>>|'].includes(clean(e.innerText).toLowerCase()));
+        if (last) { lastTried = true; return { el: last, page: 0 }; }
+      }
+      const ahead = nums.filter(n => n.page > (activePage() || 0)).pop();
+      if (ahead && nums.length > 1) return ahead;
+    }
+    const el = findPageControl(-1);
+    return el ? { el, page: 0 } : null;
   }
 
+  notes.push(`Page bar at start: ${pagerText()}`);
+  notes.push(`Page ${[...visited][0]}: ${add(readRows(table), [...visited][0])} rows`);
+  for (let step = 0, idle = 0; step < MAX_PAGES && !(expected && byTid.size >= expected); step++) {
+    if (idle >= 25) { notes.push('Stopped: 25 page changes in a row brought no new ATMs'); break; }
+    const next = nextControl();
+    if (!next) { notes.push(`Stopped: no unread page number or "next" in page bar ${pagerText()}`); break; }
+    const before = signature();
+    next.el.click();
+    if (!(await waitForChange(before))) { notes.push(`Stopped: table did not change after clicking "${clean(next.el.innerText)}"`); break; }
+    const shown = activePage() || next.page;
+    if (shown) visited.add(shown);
+    const added = add(readRows(findTable()), shown);
+    idle = added ? 0 : idle + 1;
+    if (added) lastTried = false;
+    notes.push(`Clicked "${clean(next.el.innerText)}", page bar shows ${shown || '?'}: ${added} new ATMs (total ${byTid.size})`);
+    if (!expected && added === 0 && !next.page) break; // "next" brought nothing new -> finished
+  }
+  const page = visited.size;
+  console.log(notes.join('\n'));
+
+  const all = [...byTid.values()].sort((a, b) => a.order - b.order).map(x => x.r);
   if (!all.length) { diagnose(findTable(), 'No ATM rows found.'); return; }
+  notes.push(`ATMs read: ${all.length}${expected ? ` of ${expected}` : ''}`);
+  if (expected && all.length < expected) {
+    diagnose(findTable(), `Only ${all.length} of ${expected} ATMs were read (${page} page(s)), so the report would be incomplete.`);
+    return;
+  }
 
   // ---------- Header rows: the website's own, else rebuilt from the cell contents ----------
   const lastHeader = readHeader(findTable());
   const width = Math.max(...all.map(r => r.length), ...websiteHeader.map(r => r.length), ...lastHeader.map(r => r.length));
-  const fit = r => Array.from({ length: width }, (_, i) => r[i] === undefined ? '' : r[i]);
+  const fit = r => range(width, i => r[i] === undefined ? '' : r[i]);
   const data = all.map(fit);
   const candidates = [['website header', websiteHeader], ['website header (last page)', lastHeader], ['columns detected from the data', headerFromContent(data, width)]];
   let header = null, headerSource = '', problems = [];
@@ -321,7 +384,8 @@
   console.log(`Columns (${headerSource}): NAME=${cols.name + 1} TID=${cols.tid + 1} NPR=${cols.avail + 1} DISPENSER=${cols.disp + 1} of ${width}`);
 
   const red = data.filter(r => r[0] === 'RED');
-  const unknown = data.filter(r => r[0] !== 'RED' && r[0] !== 'GREEN').length;
+  const maint = data.filter(r => r[0] === 'SUPERVISOR' || r[0] === 'REPLENISHMENT').length;
+  const unknown = data.filter(r => !['RED', 'GREEN', 'SUPERVISOR', 'REPLENISHMENT'].includes(r[0])).length;
   if (unknown) {
     diagnose(findTable(), `Could not read the red/green status dot of ${unknown} of ${data.length} ATMs, so the PROBLEM IN ATM list would be wrong.`);
     return;
@@ -340,7 +404,7 @@
     const xmlRows = rows.map((r, ri) => `<row r="${ri + 1}">` + r.map((v, ci) => v
       ? `<c r="${colName(ci)}${ri + 1}"${ri < h ? ' s="1"' : ''} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`
       : '').join('') + '</row>').join('');
-    const colWidths = Array.from({ length: width }, (_, i) => Math.min(40, Math.max(6, ...rows.slice(h - 1).map(r => String(r[i] || '').length + 2))));
+    const colWidths = range(width, i => Math.min(40, Math.max(6, ...rows.slice(h - 1).map(r => String(r[i] || '').length + 2))));
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
       `<dimension ref="A1:${colName(width - 1)}${rows.length}"/>` +
@@ -388,7 +452,7 @@
   };
 
   // Minimal ZIP writer (stored, no compression) - an .xlsx is just a zip of these XML files
-  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crcTable = range(256, n => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
   const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
   const enc = new TextEncoder();
   const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
@@ -410,7 +474,8 @@
     parts.push(local, nameB, bytes);
     offset += local.length + nameB.length + bytes.length;
   }
-  const cdSize = central.reduce((s, b) => s + b.length, 0);
+  let cdSize = 0;
+  for (const b of central) cdSize += b.length;
   const end = new DataView(new ArrayBuffer(22));
   end.setUint32(0, 0x06054b50, true); end.setUint16(8, Object.keys(files).length, true);
   end.setUint16(10, Object.keys(files).length, true); end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
@@ -419,5 +484,6 @@
     { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
   console.log(`Done: ${data.length} ATMs, ${red.length} red, from ${page} page(s) -> ${fileName}`);
   alert(`Exported ${data.length} ATMs from ${page} page(s).\n` +
-        `Raw Switch Data: ${data.length} ATMs\nPROBLEM IN ATM: ${red.length} red/offline ATMs\n\nFile: ${fileName}`);
+        `Raw Switch Data: ${data.length} ATMs\nPROBLEM IN ATM: ${red.length} red/offline ATMs` +
+        (maint ? `\n(${maint} in Supervisor/Replenishment - not in PROBLEM IN ATM)` : '') + `\n\nFile: ${fileName}`);
 })();
