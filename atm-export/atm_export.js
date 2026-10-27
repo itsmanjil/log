@@ -1,14 +1,30 @@
 /*
- * ATM Monitoring -> Excel (.xlsx) exporter for the downtime report
+ * ATM Monitoring -> DAILY ATM STATUS exporter
  * Run it in the browser tab where the ATM Monitoring page is open and you are logged in.
- *   1. Go to page 1 of the table (set any filter you want first).
+ *   1. Set the website filter for the list you need and go to page 1 of the table.
  *   2. Press F12 -> Console tab. (The first time, Chrome asks you to type: allow pasting)
- *   3. Paste this whole file and press Enter.
- * It goes through every page and downloads ATM_Downtime_Report_<date>.xlsx with two sheets:
- *   "ATM Status" - every ATM, down/offline rows highlighted red, filters + frozen header
- *   "Summary"    - totals (ATMs exported, down, up) and counts per status
+ *   3. Paste this whole file and press Enter (or click the bookmark), then pick the list:
+ *        1 = all ATMs      -> downloads ATM_RAW_SWITCH_DATA_<date>.xlsx
+ *        2 = problem ATMs  -> downloads ATM_PROBLEM_IN_ATM_<date>.xlsx
+ * Both files use the same 16-column layout as copy-pasting the table into the
+ * "Raw Switch Data" / "PROBLEM IN ATM" sheets of DAILY_ATM_STATUS_V3.xlsm.
+ * The ImportWebData... macros (Module_WebImport.bas) load them and run the report.
  */
 (async () => {
+  const LISTS = {
+    '1': { sheet: 'Raw Switch Data', file: 'ATM_RAW_SWITCH_DATA' },
+    '2': { sheet: 'PROBLEM IN ATM', file: 'ATM_PROBLEM_IN_ATM' },
+  };
+  const choice = prompt('Which list is on screen?\n\n1 = ALL ATMs  (Raw Switch Data)\n2 = PROBLEM ATMs  (PROBLEM IN ATM)', '1');
+  if (choice === null) return;
+  const list = LISTS[choice.trim()];
+  if (!list) { alert('Please enter 1 or 2.'); return; }
+
+  // Same two header rows as the website table pasted into DAILY_ATM_STATUS_V3.
+  // The macro finds columns by these names (NAME, TID (PID), NPR under AVAILABLE BALANCE, DISPENSER).
+  const GROUP_ROW = ['', '', '', '', '', 'PROBLEMS', '', 'CASSETTES', '', '', '', '', 'AVAILABLE BALANCE', 'REMAINING BALANCE', 'IDLE TIME', ''];
+  const HEADER_ROW = ['STA', '', 'NAME', 'TID (PID)', 'REMOTE ADDRESS', 'DEV', 'DISP', '', '', '', 'REJ', 'CASHIN', 'NPR', 'NPR', 'DISPENSER', 'CASHIN'];
+
   const MAX_PAGES = 500;          // safety limit
   const PAGE_TIMEOUT_MS = 20000;  // how long to wait for a page to load
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -24,11 +40,12 @@
     return best;
   }
 
-  // Cell value = visible text + tooltip/alt text of icons (status dots, cassette icons, etc.).
+  // Cell value = visible text, like copy-paste gives. Cells with only an icon
+  // (status dot, error icons) get the icon's tooltip/alt/image name instead.
   function cellValue(td) {
-    const parts = [];
     const txt = clean(td.innerText);
-    if (txt) parts.push(txt);
+    if (txt) return txt;
+    const parts = [];
     for (const el of [td, ...td.querySelectorAll('img, [title], [alt]')]) {
       const t = el.getAttribute('title') || el.getAttribute('alt');
       if (t) parts.push(clean(t));
@@ -39,12 +56,6 @@
 
   function isPagerRow(tr) {
     return !!tr.closest('tfoot') || !!tr.querySelector('.rich-datascr, .dr-dscr, .ui-paginator, [class*="datascr"], [class*="paginator"]');
-  }
-
-  function readHeaders(table) {
-    const hr = (table.tHead && table.tHead.rows[table.tHead.rows.length - 1]) ||
-               [...table.rows].find(r => r.querySelector('th'));
-    return hr ? [...hr.cells].map(c => clean(c.innerText) || clean(c.title)) : [];
   }
 
   function readRows(table) {
@@ -95,7 +106,6 @@
 
   const table = findTable();
   if (!table) { alert('Could not find the data table on this page.'); return; }
-  let headers = readHeaders(table);
 
   const seen = new Set();
   const all = [];
@@ -122,85 +132,36 @@
     if (added === 0) break; // landed on a page we already have -> finished
   }
 
-  const width = Math.max(headers.length, ...all.map(r => r.length));
-  headers = Array.from({ length: width }, (_, i) => headers[i] || `Col${i + 1}`);
+  if (!all.length) { alert('No ATM rows found.'); return; }
+  const wrongWidth = all.filter(r => r.length !== HEADER_ROW.length).length;
+  if (wrongWidth) {
+    alert(`Warning: ${wrongWidth} of ${all.length} rows do not have ${HEADER_ROW.length} columns.\n` +
+          'The website layout may have changed - check the file before running the report.');
+  }
+  const rows = [[`FILTERED ${all.length} ATM`, ...GROUP_ROW.slice(1)], HEADER_ROW, ...all];
 
   // ---------- Build the .xlsx file (no external libraries) ----------
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
-  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const xmlEsc = v => String(v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const colName = i => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
-  // "1'065'000.00", "1,065,000.00", "17" -> numbers; IPs, IDs and text stay text
-  const toNumber = v => /^-?\d{1,3}(['’, ]?\d{3})*(\.\d+)?$/.test(v) ? Number(v.replace(/['’, ]/g, '')) : null;
-  const isDown = r => /\b(red|offline|down|closed|out of service)\b/i.test(r[0] || '');
+  const lastCol = colName(Math.max(...rows.map(r => r.length)) - 1);
 
-  // Styles: 0 normal, 1 header, 2 down-row text, 3 title, 4 number, 5 down-row number
-  const cell = (ref, v, style, down) => {
-    const n = toNumber(v || '');
-    if (n !== null) return `<c r="${ref}" s="${Number.isInteger(n) && !v.includes('.') ? (down ? 2 : 0) : (down ? 5 : 4)}"><v>${n}</v></c>`;
-    const s = style ?? (down ? 2 : 0);
-    return v ? `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>` : (s ? `<c r="${ref}" s="${s}"/>` : '');
-  };
-  const sheetXml = (rows, { title, header, filter, widths, highlight }) => {
-    const lastCol = colName(Math.max(...rows.map(r => r.length), 1) - 1);
-    const xmlRows = rows.map((r, ri) => {
-      const rn = ri + 1;
-      const down = highlight && ri >= 2 && isDown(r);
-      const style = ri === 0 && title ? 3 : (ri === 1 && header ? 1 : undefined);
-      return `<row r="${rn}">${r.map((v, ci) => cell(colName(ci) + rn, v, style, down)).join('')}</row>`;
-    }).join('');
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-      `<dimension ref="A1:${lastCol}${rows.length}"/>` +
-      '<sheetViews><sheetView workbookViewId="0">' +
-      (header ? '<pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A3" sqref="A3"/>' : '<selection activeCell="A1" sqref="A1"/>') +
-      '</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +
-      `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` +
-      `<sheetData>${xmlRows}</sheetData>` +
-      (filter ? `<autoFilter ref="A2:${lastCol}${rows.length}"/>` : '') +
-      '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>';
-  };
-  const widthsFor = rows => Array.from({ length: Math.max(...rows.map(r => r.length)) }, (_, i) =>
-    Math.min(60, Math.max(6, ...rows.slice(1).map(r => String(r[i] || '').length + 2))));
-
-  const dataRows = [[`ATM Monitoring export - ${stamp}`], headers, ...all];
-
-  const statusCounts = {};
-  for (const r of all) { const k = r[0] || '(blank)'; statusCounts[k] = (statusCounts[k] || 0) + 1; }
-  const downCount = all.filter(isDown).length;
-  const summaryRows = [
-    [`ATM Status Summary - ${stamp}`],
-    ['Item', 'Value'],
-    ['Total ATMs exported', String(all.length)],
-    ['ATMs down / offline (highlighted red)', String(downCount)],
-    ['ATMs up', String(all.length - downCount)],
-    ['Pages read', String(page)],
-    ['Source page', location.href],
-    [],
-    [`Status column (${headers[0]})`, 'Count'],
-    ...Object.entries(statusCounts).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, String(n)]),
-  ];
-
-  const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00"/></numFmts>' +
-    '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font></fonts>' +
-    '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
-    '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>' +
-    '<fill><patternFill patternType="solid"><fgColor rgb="FFF8CBAD"/><bgColor indexed="64"/></patternFill></fill></fills>' +
-    '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>' +
-    '<border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/></border></borders>' +
-    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="6">' +
-    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>' +
-    '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
-    '<xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1"/>' +
-    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
-    '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
-    '<xf numFmtId="164" fontId="0" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1"/>' +
-    '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+  // Every value is written as text, exactly as the website shows it (e.g. 1`065`000.00),
+  // the same as copy-paste; the macro's CleanNprValue converts the balances itself.
+  const xmlRows = rows.map((r, ri) => `<row r="${ri + 1}">` + r.map((v, ci) => v
+    ? `<c r="${colName(ci)}${ri + 1}"${ri < 2 ? ' s="1"' : ''} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`
+    : '').join('') + '</row>').join('');
+  const colWidths = HEADER_ROW.map((_, i) => Math.min(40, Math.max(6, ...rows.slice(1).map(r => String(r[i] || '').length + 2))));
+  const sheetXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    `<dimension ref="A1:${lastCol}${rows.length}"/>` +
+    '<sheetViews><sheetView workbookViewId="0"><pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/>' +
+    '<selection pane="bottomLeft" activeCell="A3" sqref="A3"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +
+    `<cols>${colWidths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` +
+    `<sheetData>${xmlRows}</sheetData>` +
+    '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>';
 
   const files = {
     '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -209,7 +170,6 @@
       '<Default Extension="xml" ContentType="application/xml"/>' +
       '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
       '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-      '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
       '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
     '_rels/.rels': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
@@ -217,17 +177,22 @@
     'xl/workbook.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
       '<workbookPr/><bookViews><workbookView activeTab="0"/></bookViews>' +
-      '<sheets><sheet name="ATM Status" sheetId="1" r:id="rId1"/><sheet name="Summary" sheetId="2" r:id="rId2"/></sheets>' +
-      '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">' +
-      `'ATM Status'!$A$2:$${colName(width - 1)}$${all.length + 2}</definedName></definedNames><calcPr calcId="191029"/></workbook>`,
+      `<sheets><sheet name="${list.sheet}" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="191029"/></workbook>`,
     'xl/_rels/workbook.xml.rels': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
-      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
-      '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
-    'xl/styles.xml': stylesXml,
-    'xl/worksheets/sheet1.xml': sheetXml(dataRows, { title: true, header: true, filter: true, widths: widthsFor(dataRows), highlight: true }),
-    'xl/worksheets/sheet2.xml': sheetXml(summaryRows, { title: true, header: true, filter: false, widths: [45, 20] }),
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+    'xl/styles.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      '<fonts count="2"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font></fonts>' +
+      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+      '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+      '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>' +
+      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
+    'xl/worksheets/sheet1.xml': sheetXml,
   };
 
   // Minimal ZIP writer (stored, no compression) - an .xlsx is just a zip of these XML files
@@ -262,8 +227,8 @@
 
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `ATM_Downtime_Report_${stamp.replace(/[-: ]/g, '').replace(/^(\d{8})/, '$1_')}.xlsx`;
+  a.download = `${list.file}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`;
   document.body.appendChild(a); a.click(); a.remove();
-  console.log(`Done: ${all.length} rows (${downCount} down) from ${page} page(s) -> ${a.download}`);
-  alert(`Exported ${all.length} ATMs (${downCount} down/offline) from ${page} page(s).\nFile: ${a.download}`);
+  console.log(`Done: ${all.length} ATMs from ${page} page(s) -> ${a.download}`);
+  alert(`Exported ${all.length} ATMs from ${page} page(s) for "${list.sheet}".\nFile: ${a.download}`);
 })();
