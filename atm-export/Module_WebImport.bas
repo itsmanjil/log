@@ -18,7 +18,7 @@ Option Explicit
 Private Const EXPORT_FILE_PATTERN As String = "ATM_SWITCH_DATA_*.xlsx"
 Private Const FRESH_MINUTES As Long = 60   ' newer files are imported without asking
 Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}"
-Private Const ARCHIVE_FOLDER As String = "ATM SWITCH DATA"  ' next to this workbook
+Private Const ARCHIVE_FOLDER As String = "ATM SWITCH DATA"  ' inside Downloads, today's files only
 Private Const MISSING_LABEL As String = "NOT IN SWITCH DATA"
 Private Const MAX_MISSING_SHARE As Double = 0.1  ' more missing than this = filtered export, mark none
 
@@ -202,33 +202,55 @@ Private Function TerminalOf(ByVal v As Variant) As String
     If t Like "PRV#*" Then TerminalOf = t
 End Function
 
-' Move the imported file out of Downloads into ATM SWITCH DATA\yyyy\MONTH next to
-' this workbook, so Downloads stays clean and the same file is never imported twice.
+' Move the imported file into Downloads\ATM SWITCH DATA, so Downloads stays clean and
+' the same file is never imported twice. That folder keeps only today's exports:
+' older ATM_SWITCH_DATA files in it are deleted.
 Private Sub ArchiveExport(ByVal exportFile As String)
-    Dim folder As String, target As String, baseName As String
+    Dim folder As String, target As String, baseName As String, f As String
     Dim n As Long
+    Dim old As New Collection
+    Dim item As Variant
 
     On Error GoTo Done
-    If Len(ThisWorkbook.Path) = 0 Then Exit Sub
-    folder = ThisWorkbook.Path & "\" & ARCHIVE_FOLDER
-    If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
-    folder = folder & "\" & Format$(Date, "yyyy")
-    If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
-    folder = folder & "\" & UCase$(Format$(Date, "mmmm"))
+    folder = DownloadsFolder()
+    If Len(folder) = 0 Then Exit Sub
+    folder = folder & "\" & ARCHIVE_FOLDER
     If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
 
     baseName = Mid$(exportFile, InStrRev(exportFile, "\") + 1)
-    If StrComp(Left$(exportFile, InStrRev(exportFile, "\") - 1), folder, vbTextCompare) = 0 Then Exit Sub
-    target = folder & "\" & baseName
-    Do While Len(Dir$(target)) > 0
-        n = n + 1
-        target = folder & "\" & Left$(baseName, Len(baseName) - 5) & " (" & n & ").xlsx"
+    If StrComp(Left$(exportFile, InStrRev(exportFile, "\") - 1), folder, vbTextCompare) <> 0 Then
+        target = folder & "\" & baseName
+        Do While Len(Dir$(target)) > 0
+            n = n + 1
+            target = folder & "\" & Left$(baseName, Len(baseName) - 5) & " (" & n & ").xlsx"
+        Loop
+        CreateObject("Scripting.FileSystemObject").MoveFile exportFile, target
+    End If
+
+    f = Dir$(folder & "\" & EXPORT_FILE_PATTERN)
+    Do While Len(f) > 0
+        If Int(FileDateTime(folder & "\" & f)) < Date Then old.Add folder & "\" & f
+        f = Dir$()
     Loop
-    CreateObject("Scripting.FileSystemObject").MoveFile exportFile, target  ' works across drives / shared folders
-    Exit Sub
+    For Each item In old
+        Kill item
+    Next item
 Done:
-    ' Could not move it (e.g. no write access): leave it in Downloads.
+    ' Could not move or delete (e.g. file open): leave it where it is.
 End Sub
+
+' The Windows Downloads folder (it can be moved, e.g. to another drive).
+Private Function DownloadsFolder() As String
+    On Error Resume Next
+    With CreateObject("WScript.Shell")
+        DownloadsFolder = .ExpandEnvironmentStrings(.RegRead( _
+            "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders\" & DOWNLOADS_GUID))
+    End With
+    On Error GoTo 0
+    If Len(DownloadsFolder) = 0 Then DownloadsFolder = Environ$("USERPROFILE") & "\Downloads"
+    If Right$(DownloadsFolder, 1) = "\" Then DownloadsFolder = Left$(DownloadsFolder, Len(DownloadsFolder) - 1)
+    If Len(Dir$(DownloadsFolder, vbDirectory)) = 0 Then DownloadsFolder = vbNullString
+End Function
 
 ' Empty string if wb looks like an atm_export.js file, otherwise the reason.
 Private Function ExportProblem(ByVal wb As Workbook) As String

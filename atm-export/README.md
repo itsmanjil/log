@@ -28,8 +28,9 @@ An export made in the last 60 minutes is used without asking. An older one (or o
 The macro looks in the Downloads folder of the PC you are working on (also when the workbook is opened from a
 shared folder on another PC); if no export is there it lets you pick the file.
 
-After importing, the file is moved from Downloads to `ATM SWITCH DATA\<year>\<MONTH>\` in the workbook's folder.
-(A browser bookmark is not allowed to choose where Chrome saves files, so the macro files them.)
+After importing, the file is moved to `Downloads\ATM SWITCH DATA`. That folder keeps only today's exports;
+older ones are deleted at the next import. (A browser bookmark is not allowed to choose where Chrome saves
+files, so the macro files them.)
 
 ATMs deleted from the website are still on the TOTAL list. If 10% or fewer of the TOTAL ATMs are missing from the
 export, they are marked `NOT IN SWITCH DATA` on TOTAL, left out of CASH LOW IN ATM / ATM NOT WORKING, and listed in
