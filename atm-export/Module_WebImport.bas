@@ -192,7 +192,7 @@ Private Sub MarkAtmsMissingFromExport()
                   "If an ATM was removed for good, delete its row from the TOTAL sheet."
 End Sub
 
-' "PRV23301 (199735)" -> "PRV23301"; empty if not a PRV terminal.
+' "PRV12345 (100001)" -> "PRV12345"; empty if not a PRV terminal.
 Private Function TerminalOf(ByVal v As Variant) As String
     Dim t As String
     If IsError(v) Then Exit Function
