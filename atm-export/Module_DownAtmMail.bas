@@ -362,11 +362,8 @@ Private Function DefaultSubject() As String
 End Function
 
 Private Function DefaultBody() As String
-    DefaultBody = "Dear Sir/Madam," & vbLf & vbLf & _
-        "Your ATM {BRANCH} ({TERMINAL}) has been down since {DATE} {TIME} ({DOWNFOR})." & vbLf & _
-        "Issue: {ISSUE}" & vbLf & vbLf & _
-        "Please check the ATM and update us as soon as possible." & vbLf & vbLf & _
-        "Regards," & vbLf & "ATM Monitoring"
+    DefaultBody = "ATM {BRANCH} ({TERMINAL}) has been down since {DATE} {TIME} ({DOWNFOR}). " & _
+        "Issue: {ISSUE}. Please check the ATM and update us as soon as possible."
 End Function
 
 ' Builds the ATM EMAIL sheet: settings on top, then every terminal on the TOTAL list.
@@ -447,7 +444,7 @@ Private Sub WriteSettings(ByVal ws As Worksheet, ByVal isNew As Boolean)
     ws.Range(ws.Cells(ROW_OWA, 3), ws.Cells(ROW_BODY, 3)).Font.Color = RGB(89, 89, 89)
     ws.Range(ws.Cells(ROW_OWA, 2), ws.Cells(ROW_BODY, 2)).Interior.Color = RGB(255, 242, 204)
     ws.Cells(ROW_BODY, 2).WrapText = True
-    ws.Rows(ROW_BODY).RowHeight = 120
+    ws.Rows(ROW_BODY).RowHeight = 60
 End Sub
 
 ' An ATM EMAIL sheet made by the first (dispenser-only) version has no Hours row
@@ -457,7 +454,13 @@ Private Sub UpgradeEmailSheet()
     If Not HasSheet(ThisWorkbook, EMAIL_SHEET) Then Exit Sub
     Set ws = ThisWorkbook.Worksheets(EMAIL_SHEET)
     If StrComp(Trim$(CStr(ws.Cells(FIRST_ROW - 1, E_TERMINAL).Value)), "Terminal", vbTextCompare) = 0 And _
-       StrComp(Trim$(CStr(ws.Cells(FIRST_ROW - 1, E_PHONE).Value)), "Phone", vbTextCompare) = 0 Then Exit Sub
+       StrComp(Trim$(CStr(ws.Cells(FIRST_ROW - 1, E_PHONE).Value)), "Phone", vbTextCompare) = 0 Then
+        ' message still the earlier default (Dear Sir/Madam ... Regards): switch to the current one
+        If InStr(1, CStr(ws.Cells(ROW_BODY, 2).Value), "Your ATM {BRANCH} ({TERMINAL}) has been down since", vbTextCompare) > 0 Then
+            ws.Cells(ROW_BODY, 2).Value = DefaultBody()
+        End If
+        Exit Sub
+    End If
     If StrComp(Trim$(CStr(ws.Cells(10, 1).Value)), "Terminal", vbTextCompare) <> 0 Then Exit Sub
 
     ' old layout: settings rows 3-6 (address, CC, subject, message), headers on row 10, Last mailed in E
