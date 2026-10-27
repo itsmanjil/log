@@ -139,25 +139,28 @@
   // Styles: 0 normal, 1 header, 2 down-row text, 3 title, 4 number, 5 down-row number
   const cell = (ref, v, style, down) => {
     const n = toNumber(v || '');
-    if (n !== null) return `<c r="${ref}" s="${down ? 5 : 4}"><v>${n}</v></c>`;
+    if (n !== null) return `<c r="${ref}" s="${Number.isInteger(n) && !v.includes('.') ? (down ? 2 : 0) : (down ? 5 : 4)}"><v>${n}</v></c>`;
     const s = style ?? (down ? 2 : 0);
     return v ? `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>` : (s ? `<c r="${ref}" s="${s}"/>` : '');
   };
-  const sheetXml = (rows, { title, header, filter, widths }) => {
+  const sheetXml = (rows, { title, header, filter, widths, highlight }) => {
     const lastCol = colName(Math.max(...rows.map(r => r.length), 1) - 1);
     const xmlRows = rows.map((r, ri) => {
       const rn = ri + 1;
-      const down = header && ri >= 2 && isDown(r);
+      const down = highlight && ri >= 2 && isDown(r);
       const style = ri === 0 && title ? 3 : (ri === 1 && header ? 1 : undefined);
       return `<row r="${rn}">${r.map((v, ci) => cell(colName(ci) + rn, v, style, down)).join('')}</row>`;
     }).join('');
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-      (header ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' : '') +
+      `<dimension ref="A1:${lastCol}${rows.length}"/>` +
+      '<sheetViews><sheetView workbookViewId="0">' +
+      (header ? '<pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A3" sqref="A3"/>' : '<selection activeCell="A1" sqref="A1"/>') +
+      '</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +
       `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` +
       `<sheetData>${xmlRows}</sheetData>` +
       (filter ? `<autoFilter ref="A2:${lastCol}${rows.length}"/>` : '') +
-      '</worksheet>';
+      '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>';
   };
   const widthsFor = rows => Array.from({ length: Math.max(...rows.map(r => r.length)) }, (_, i) =>
     Math.min(60, Math.max(6, ...rows.slice(1).map(r => String(r[i] || '').length + 2))));
@@ -213,16 +216,17 @@
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
     'xl/workbook.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+      '<workbookPr/><bookViews><workbookView activeTab="0"/></bookViews>' +
       '<sheets><sheet name="ATM Status" sheetId="1" r:id="rId1"/><sheet name="Summary" sheetId="2" r:id="rId2"/></sheets>' +
       '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">' +
-      `'ATM Status'!$A$2:$${colName(width - 1)}$${all.length + 2}</definedName></definedNames></workbook>`,
+      `'ATM Status'!$A$2:$${colName(width - 1)}$${all.length + 2}</definedName></definedNames><calcPr calcId="191029"/></workbook>`,
     'xl/_rels/workbook.xml.rels': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
       '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
       '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
     'xl/styles.xml': stylesXml,
-    'xl/worksheets/sheet1.xml': sheetXml(dataRows, { title: true, header: true, filter: true, widths: widthsFor(dataRows) }),
+    'xl/worksheets/sheet1.xml': sheetXml(dataRows, { title: true, header: true, filter: true, widths: widthsFor(dataRows), highlight: true }),
     'xl/worksheets/sheet2.xml': sheetXml(summaryRows, { title: true, header: true, filter: false, widths: [45, 20] }),
   };
 
@@ -239,7 +243,7 @@
     const head = (sig, extra) => {
       const h = new DataView(new ArrayBuffer(extra ? 46 : 30));
       let p = 0; const u32 = v => { h.setUint32(p, v, true); p += 4; }, u16 = v => { h.setUint16(p, v, true); p += 2; };
-      u32(sig); if (extra) u16(20); u16(20); u16(0x0800); u16(0); u16(dosTime); u16(dosDate);
+      u32(sig); if (extra) u16(20); u16(20); u16(0); u16(0); u16(dosTime); u16(dosDate);
       u32(crc); u32(data.length); u32(data.length); u16(nameB.length); u16(0);
       if (extra) { u16(0); u16(0); u16(0); u32(0); u32(offset); }
       return new Uint8Array(h.buffer);
