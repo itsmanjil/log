@@ -2,42 +2,41 @@ Attribute VB_Name = "Module_WebImport"
 Option Explicit
 
 ' ======================================================================
-' IMPORT WEBSITE EXPORTS (atm_export.js) AND RUN THE DAILY REPORT
+' IMPORT WEBSITE EXPORT (atm_export.js) AND RUN THE DAILY REPORT
 '
 ' The browser script saves the ATM Monitoring table as
-'   ATM_RAW_SWITCH_DATA_<date>_<time>.xlsx   (all ATMs)
-'   ATM_PROBLEM_IN_ATM_<date>_<time>.xlsx    (problem ATMs)
-' in the same layout as copy-pasting the website table. These macros take
-' the newest file of each kind from the Downloads folder (or ask for it),
-' put them into Raw Switch Data / PROBLEM IN ATM, then run the normal
+'   ATM_SWITCH_DATA_<date>_<time>.xlsx
+' with two sheets in the same layout as copy-pasting the website table:
+'   Raw Switch Data  - every ATM
+'   PROBLEM IN ATM   - ATMs whose status dot is red / offline
+' These macros take the newest such file from the Downloads folder (or ask
+' for it), copy both sheets into this workbook, then run the normal
 ' 1 PM / 8 PM report (Run1PMReport / Run8PMReport in Module2).
 ' ======================================================================
 
-Private Const RAW_FILE_PATTERN As String = "ATM_RAW_SWITCH_DATA_*.xlsx"
-Private Const PROBLEM_FILE_PATTERN As String = "ATM_PROBLEM_IN_ATM_*.xlsx"
+Private Const EXPORT_FILE_PATTERN As String = "ATM_SWITCH_DATA_*.xlsx"
 
 Public Sub ImportWebDataAndRun1PMReport()
-    If ImportWebExports() Then Run1PMReport
+    If ImportWebExport() Then Run1PMReport
 End Sub
 
 Public Sub ImportWebDataAndRun8PMReport()
-    If ImportWebExports() Then Run8PMReport
+    If ImportWebExport() Then Run8PMReport
 End Sub
 
 Public Sub ImportWebDataOnly()
-    If ImportWebExports() Then
-        MsgBox "Raw Switch Data and PROBLEM IN ATM updated from the website export files.", vbInformation
+    If ImportWebExport() Then
+        MsgBox "Raw Switch Data and PROBLEM IN ATM updated from the website export file.", vbInformation
     End If
 End Sub
 
-Private Function ImportWebExports() As Boolean
+Private Function ImportWebExport() As Boolean
     Dim oldScreenUpdating As Boolean
     Dim oldEnableEvents As Boolean
     Dim oldDisplayAlerts As Boolean
-    Dim downloadsFolder As String
-    Dim rawFile As String
-    Dim problemFile As String
+    Dim exportFile As String
     Dim msg As String
+    Dim wbSource As Workbook
 
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
@@ -45,21 +44,15 @@ Private Function ImportWebExports() As Boolean
 
     On Error GoTo SafeFail
 
-    downloadsFolder = Environ$("USERPROFILE") & "\Downloads\"
+    exportFile = NewestFile(Environ$("USERPROFILE") & "\Downloads\", EXPORT_FILE_PATTERN)
+    If Len(exportFile) = 0 Then exportFile = PickFile("Select the website export (" & EXPORT_FILE_PATTERN & ")")
+    If Len(exportFile) = 0 Then Exit Function
 
-    rawFile = NewestFile(downloadsFolder, RAW_FILE_PATTERN)
-    If Len(rawFile) = 0 Then rawFile = PickFile("Select the ALL ATMs export (" & RAW_FILE_PATTERN & ")")
-    If Len(rawFile) = 0 Then Exit Function
-
-    problemFile = NewestFile(downloadsFolder, PROBLEM_FILE_PATTERN)
-    If Len(problemFile) = 0 Then problemFile = PickFile("Select the PROBLEM ATMs export (" & PROBLEM_FILE_PATTERN & ")")
-    If Len(problemFile) = 0 Then Exit Function
-
-    msg = "Import these website exports?" & vbCrLf & vbCrLf & _
-          "Raw Switch Data:" & vbCrLf & "    " & FileLabel(rawFile) & vbCrLf & _
-          "PROBLEM IN ATM:" & vbCrLf & "    " & FileLabel(problemFile)
-    If Int(FileDateTime(rawFile)) < Date Or Int(FileDateTime(problemFile)) < Date Then
-        msg = msg & vbCrLf & vbCrLf & "WARNING: at least one file is NOT from today."
+    msg = "Import this website export into Raw Switch Data and PROBLEM IN ATM?" & vbCrLf & vbCrLf & _
+          "    " & Mid$(exportFile, InStrRev(exportFile, "\") + 1) & vbCrLf & _
+          "    saved " & Format$(FileDateTime(exportFile), "dd/mm/yyyy hh:nn")
+    If Int(FileDateTime(exportFile)) < Date Then
+        msg = msg & vbCrLf & vbCrLf & "WARNING: this file is NOT from today."
     End If
     If MsgBox(msg, vbQuestion + vbYesNo, "Import Website Data") <> vbYes Then Exit Function
 
@@ -67,51 +60,39 @@ Private Function ImportWebExports() As Boolean
     Application.EnableEvents = False
     Application.DisplayAlerts = False
 
-    CopyExportIntoSheet rawFile, ThisWorkbook.Worksheets("Raw Switch Data")
-    CopyExportIntoSheet problemFile, ThisWorkbook.Worksheets("PROBLEM IN ATM")
+    Set wbSource = Workbooks.Open(exportFile, UpdateLinks:=False, ReadOnly:=True)
+    CopySheetValues wbSource.Worksheets("Raw Switch Data"), ThisWorkbook.Worksheets("Raw Switch Data")
+    CopySheetValues wbSource.Worksheets("PROBLEM IN ATM"), ThisWorkbook.Worksheets("PROBLEM IN ATM")
+    wbSource.Close SaveChanges:=False
+    Set wbSource = Nothing
 
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
     Application.DisplayAlerts = oldDisplayAlerts
 
-    ImportWebExports = True
+    ImportWebExport = True
     Exit Function
 
 SafeFail:
+    msg = Err.Description
+    Application.CutCopyMode = False
+    If Not wbSource Is Nothing Then wbSource.Close SaveChanges:=False
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
     Application.DisplayAlerts = oldDisplayAlerts
-    MsgBox "Error: " & Err.Description, vbExclamation, "Import Website Data"
+    MsgBox "Error: " & msg, vbExclamation, "Import Website Data"
 End Function
 
-' Same copy as ImportLastDispenseSwitchDataAndRefresh: values only, first sheet.
-Private Sub CopyExportIntoSheet(ByVal filePath As String, ByVal wsTarget As Worksheet)
-    Dim wbSource As Workbook
-    Dim errNum As Long
-    Dim errDesc As String
-
-    On Error GoTo SafeFail
-
-    Set wbSource = Workbooks.Open(filePath, UpdateLinks:=False, ReadOnly:=True)
-
+' Same copy as ImportLastDispenseSwitchDataAndRefresh: clear, then paste values.
+Private Sub CopySheetValues(ByVal wsSource As Worksheet, ByVal wsTarget As Worksheet)
     On Error Resume Next
     wsTarget.Unprotect
-    On Error GoTo SafeFail
+    On Error GoTo 0
 
     wsTarget.Cells.Clear
-    wbSource.Worksheets(1).UsedRange.Copy
+    wsSource.UsedRange.Copy
     wsTarget.Range("A1").PasteSpecial Paste:=xlPasteValues
     Application.CutCopyMode = False
-
-    wbSource.Close SaveChanges:=False
-    Exit Sub
-
-SafeFail:
-    errNum = Err.Number
-    errDesc = Err.Description
-    Application.CutCopyMode = False
-    If Not wbSource Is Nothing Then wbSource.Close SaveChanges:=False
-    Err.Raise errNum, , wsTarget.Name & ": " & errDesc
 End Sub
 
 Private Function NewestFile(ByVal folderPath As String, ByVal pattern As String) As String
@@ -141,9 +122,4 @@ Private Function PickFile(ByVal dialogTitle As String) As String
         .Filters.Add "Excel Files", "*.xlsx; *.xls"
         If .Show = -1 Then PickFile = CStr(.SelectedItems(1))
     End With
-End Function
-
-Private Function FileLabel(ByVal filePath As String) As String
-    FileLabel = Mid$(filePath, InStrRev(filePath, "\") + 1) & _
-                "   (" & Format$(FileDateTime(filePath), "dd/mm/yyyy hh:nn") & ")"
 End Function
