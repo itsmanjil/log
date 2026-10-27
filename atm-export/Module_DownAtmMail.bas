@@ -8,6 +8,7 @@ Option Explicit
 ' report, sheet ATM DOWN REPORT, and takes every ATM that
 '   - has no ATM-UP date,
 '   - is not a red row (red text = already with the vendor),
+'   - is not NO TRANSACTION IN ATM. / CHECK ATM (only idle, not a fault),
 '   - has been down at least the hours set on ATM EMAIL (default 1),
 ' whatever the issue. For each one it opens a ready-filled new mail in
 ' Outlook on the web (Chrome). Nothing is sent automatically: you check each
@@ -82,7 +83,7 @@ Public Sub MailDownAtms()
 
     If mails.Count = 0 Then
         MsgBox "No ATM in the latest section of " & wbReport.Name & " has been down " & HoursText() & _
-               " or more (red rows and ATMs already up are not counted).", vbInformation, "Mail Down ATMs"
+               " or more (red rows, ATMs already up and no-transaction / CHECK ATM rows are not counted).", vbInformation, "Mail Down ATMs"
         Exit Sub
     End If
     If ready = 0 Then
@@ -164,7 +165,7 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
         If t Like "PRV#*" And Not seen.Exists(t) Then
             seen(t) = True
             If Len(Trim$(CStr(ws.Cells(r, COL_UP).Value))) = 0 And Not RowHasRedText(ws, r) And _
-               DownSinceOf(ws, r, downSince) Then
+               Not IsNoTransactionIssue(ws, r) And DownSinceOf(ws, r, downSince) Then
                 hoursDown = (Now - downSince) * 24
                 If hoursDown >= minHours Then
                     row = 0: toAddr = "": cc = ccAll: phone = ""
@@ -222,6 +223,14 @@ Private Function RowHasRedText(ByVal ws As Worksheet, ByVal r As Long) As Boolea
                ((colorValue \ 65536) Mod 256) <= 100 Then RowHasRedText = True: Exit Function
         End If
     Next c
+End Function
+
+' Not a fault, only no transactions: "NO TRANSACTION IN ATM." chosen by staff, or the
+' "CHECK ATM" rows the report writes for ATMs idle 2+ hours. These are never mailed.
+Private Function IsNoTransactionIssue(ByVal ws As Worksheet, ByVal r As Long) As Boolean
+    Dim issue As String
+    issue = UCase$(Trim$(CStr(ws.Cells(r, COL_ISSUE).Value)))
+    IsNoTransactionIssue = InStr(issue, "NO TRANSACTION") > 0 Or issue = "CHECK ATM"
 End Function
 
 Private Function IssueOf(ByVal ws As Worksheet, ByVal r As Long) As String
@@ -433,7 +442,7 @@ Private Sub WriteSettings(ByVal ws As Worksheet, ByVal isNew As Boolean)
     ws.Cells(ROW_CC, 3).Value = "Optional, e.g. your team's address. Separate several with ;"
     ws.Cells(ROW_HOURS, 1).Value = "Down for at least (hours)"
     If isNew Or Len(Trim$(CStr(ws.Cells(ROW_HOURS, 2).Value))) = 0 Then ws.Cells(ROW_HOURS, 2).Value = 1
-    ws.Cells(ROW_HOURS, 3).Value = "Only ATMs down this long are mailed (red rows and ATMs already up never are)"
+    ws.Cells(ROW_HOURS, 3).Value = "Only ATMs down this long are mailed (red rows, ATMs already up and no-transaction / CHECK ATM rows never are)"
     ws.Cells(ROW_SUBJECT, 1).Value = "Subject"
     If isNew Then ws.Cells(ROW_SUBJECT, 2).Value = DefaultSubject()
     ws.Cells(ROW_BODY, 1).Value = "Message"

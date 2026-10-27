@@ -59,6 +59,7 @@ Click it after the report has run. It reads the **latest section** (8 PM if ther
 open daily report, sheet ATM DOWN REPORT, and takes every ATM that
 - has no ATM-UP date,
 - is **not a red row** (red text = already with the vendor),
+- is not `NO TRANSACTION IN ATM.` or `CHECK ATM` (only idle, not a fault),
 - has been down at least 1 hour (Issue Identified Date + Down time), with **any** issue.
 
 For each one it opens a filled-in new mail in Outlook on the web (Chrome): branch address, subject, message.
