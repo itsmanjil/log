@@ -296,17 +296,23 @@ Private Function HeaderColumn(ByVal ws As Worksheet, ByVal headerRow As Long, By
     Next c
 End Function
 
-' Same copy as ImportLastDispenseSwitchDataAndRefresh: clear, then paste values
-' (paste keeps every value as text, e.g. 1`065`000.00, like a manual paste).
+' Clear, then copy the values without the Windows clipboard (Copy/PasteSpecial can
+' fail or hang when other programs use the clipboard). The cells are text-formatted
+' while the values go in, so every value stays text exactly as on the website
+' (e.g. 1`065`000.00, 10.0.69.35), the same as a manual paste.
 Private Sub CopySheetValues(ByVal wsSource As Worksheet, ByVal wsTarget As Worksheet)
+    Dim src As Range, dest As Range
+
     On Error Resume Next
     wsTarget.Unprotect
     On Error GoTo 0
 
     wsTarget.Cells.Clear
-    wsSource.UsedRange.Copy
-    wsTarget.Range("A1").PasteSpecial Paste:=xlPasteValues
-    Application.CutCopyMode = False
+    Set src = wsSource.UsedRange
+    Set dest = wsTarget.Range("A1").Resize(src.Rows.Count, src.Columns.Count)
+    dest.NumberFormat = "@"
+    dest.Value = src.Value
+    dest.NumberFormat = "General"
 End Sub
 
 ' Newest export in the Windows Downloads folder (which can be moved, e.g. to
