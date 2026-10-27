@@ -51,24 +51,26 @@ nothing is marked.
 - **The macro shows an error:** take a photo of the message. Raw Switch Data and PROBLEM IN ATM are left unchanged if the file is not a valid export.
 - You can always go back to copy-paste plus the original **Run 1 PM Report** / **Run 8 PM Report** macros; they are unchanged.
 
-## Mail branches about cash dispenser problems
+## Mail branches about ATMs that are down
 
-`Module_DispenserMail.bas` adds the **Mail Dispenser Problems** button (CONTROL sheet, under Run 1 PM / Run 8 PM).
+`Module_DownAtmMail.bas` adds the **Mail Down ATMs (1 hr+)** button (CONTROL sheet, under Run 1 PM / Run 8 PM).
 
-1. After the report runs, staff set **Issue in ATM** to `PROBLEM IN CASH DISPENSER.` as usual.
-2. Click **Mail Dispenser Problems**. It reads today's open daily report and takes every ATM whose latest row
-   has that issue and no ATM-UP date.
-3. For each one it opens a filled-in new mail in Outlook on the web (Chrome): branch address, subject, message.
-   Check it and click **Send**. Nothing is sent automatically.
+Click it after the report has run. It reads the **latest section** (8 PM if there is one, else 1 PM) of today's
+open daily report, sheet ATM DOWN REPORT, and takes every ATM that
+- has no ATM-UP date,
+- is **not a red row** (red text = already with the vendor),
+- has been down at least 1 hour (Issue Identified Date + Down time), with **any** issue.
+
+For each one it opens a filled-in new mail in Outlook on the web (Chrome): branch address, subject, message.
+Check it and click **Send**. Nothing is sent automatically.
 
 First click creates the **ATM EMAIL** sheet (every TOTAL terminal). Fill in once:
-- column C: the branch email for each terminal (column D: extra CC),
-- B3: the Outlook web address from Chrome's address bar (e.g. `https://outlook.office.com/mail/`; for a bank
-  server something like `https://mail.<bank>/owa/`). Empty = the PC's default mail program,
-- B4: an address always copied (optional); B5 / B6: subject and message, with `{TERMINAL} {BRANCH} {DATE} {TIME}
-  {VENDOR} {REMARKS}`.
+- column C: branch email, column D: extra CC, column E: phone (shown in the list when there is no email),
+- B3: Outlook web address (already `https://outlook.office.com/mail/`); empty = the PC's default mail program,
+- B4: address always copied (optional), B5: hours down before mailing (1),
+- B6 / B7: subject and message, with `{TERMINAL} {BRANCH} {ISSUE} {DATE} {TIME} {DOWNFOR} {VENDOR} {REMARKS} {PHONE}`.
 
-An ATM is mailed once per day (column E records when); clear that cell to mail it again. ATMs without an email
-address are listed and skipped.
-
+An ATM is mailed once per day (column F records when); clear that cell to mail it again. ATMs without an email
+address are listed (with their phone) and skipped. A sheet made by the earlier dispenser-only version is
+upgraded automatically, keeping the addresses already typed in.
 Macros: `ImportWebDataAndRun1PMReport`, `ImportWebDataAndRun8PMReport`, `ImportWebDataOnly` (fills the two sheets without running the report).
