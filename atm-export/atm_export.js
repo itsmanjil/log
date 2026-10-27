@@ -49,11 +49,20 @@
     return [...new Set(parts)].join(' | ');
   }
 
-  // STA dot -> 'RED' (offline / problem) or 'GREEN', from its image name, tooltip or
-  // class (e.g. SmartVista's /image/atm/open.png "Open"), falling back to the dot's colour.
-  const RED_WORDS = ['red', 'offline', 'off', 'down', 'error', 'err', 'fail', 'failed', 'closed', 'close', 'alarm',
-    'critical', 'outofservice', 'out', 'disconnected', 'unavailable', 'fault', 'inactive'];
-  const GREEN_WORDS = ['green', 'open', 'online', 'on', 'ok', 'up', 'working', 'active', 'inservice'];
+  // STA dot -> SmartVista state, from its image name, tooltip or class
+  // (e.g. /image/atm/open.png "Open"), falling back to the dot's colour:
+  //   OFFLINE (black)  CLOSED (red)  OPEN (green)  SUPERVISOR (blue)  REPLENISHMENT
+  // OFFLINE, CLOSED and SUPERVISOR ATMs go to the PROBLEM IN ATM sheet.
+  const STATE_WORDS = [
+    ['SUPERVISOR', ['supervisor', 'blue']],
+    ['REPLENISHMENT', ['replenishment']],
+    ['OFFLINE', ['offline', 'black', 'disconnected', 'unavailable']],
+    ['CLOSED', ['closed', 'close', 'red', 'off', 'down', 'error', 'err', 'fail', 'failed', 'alarm', 'critical',
+      'outofservice', 'out', 'fault', 'inactive']],
+    ['OPEN', ['open', 'green', 'online', 'on', 'ok', 'up', 'working', 'active', 'inservice']],
+  ];
+  const STATES = STATE_WORDS.map(s => s[0]);
+  const PROBLEM_STATES = ['OFFLINE', 'CLOSED', 'SUPERVISOR'];
   const staIcons = new Set();  // every kind of STA icon seen, for the diagnostic file
   function statusOf(td) {
     const els = [td, ...td.querySelectorAll('*')];
@@ -61,19 +70,18 @@
       `"${i.getAttribute('title') || i.getAttribute('alt') || ''}"`).join(' + ') || 'no image');
     const words = new Set(els.flatMap(e => [e.getAttribute('title'), e.getAttribute('alt'), e.getAttribute('src'),
       e.getAttribute('class'), getComputedStyle(e).backgroundImage].join(' ').toLowerCase().split(/[^a-z]+/)));
-    // SmartVista states Supervisor / Replenishment: staff working on the ATM, not red
-    if (words.has('supervisor')) return 'SUPERVISOR';
-    if (words.has('replenishment')) return 'REPLENISHMENT';
-    if (RED_WORDS.some(w => words.has(w))) return 'RED';
-    if (GREEN_WORDS.some(w => words.has(w))) return 'GREEN';
+    for (const [state, list] of STATE_WORDS) if (list.some(w => words.has(w))) return state;
     for (const e of els) {
       const cs = getComputedStyle(e);
-      for (const color of [cs.backgroundColor, cs.color, cs.fill]) {
+      // text colour is black on every cell, so black only counts as a background
+      for (const [color, isBackground] of [[cs.backgroundColor, true], [cs.fill, true], [cs.color, false]]) {
         const m = /rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/.exec(color || '');
         if (!m || m[4] === '0') continue;
         const [r, g, b] = [+m[1], +m[2], +m[3]];
-        if (r >= 150 && g <= 110 && b <= 110) return 'RED';
-        if (g >= 120 && r <= 120 && b <= 120) return 'GREEN';
+        if (r >= 150 && g <= 110 && b <= 110) return 'CLOSED';
+        if (g >= 120 && r <= 120 && b <= 120) return 'OPEN';
+        if (b >= 150 && r <= 110 && g <= 160) return 'SUPERVISOR';
+        if (isBackground && r <= 60 && g <= 60 && b <= 60) return 'OFFLINE';
       }
     }
     return '';
@@ -383,11 +391,11 @@
   const cols = locateColumns(header);
   console.log(`Columns (${headerSource}): NAME=${cols.name + 1} TID=${cols.tid + 1} NPR=${cols.avail + 1} DISPENSER=${cols.disp + 1} of ${width}`);
 
-  const red = data.filter(r => r[0] === 'RED');
-  const maint = data.filter(r => r[0] === 'SUPERVISOR' || r[0] === 'REPLENISHMENT').length;
-  const unknown = data.filter(r => !['RED', 'GREEN', 'SUPERVISOR', 'REPLENISHMENT'].includes(r[0])).length;
+  const problem = data.filter(r => PROBLEM_STATES.includes(r[0]));
+  const count = state => data.filter(r => r[0] === state).length;
+  const unknown = data.filter(r => !STATES.includes(r[0])).length;
   if (unknown) {
-    diagnose(findTable(), `Could not read the red/green status dot of ${unknown} of ${data.length} ATMs, so the PROBLEM IN ATM list would be wrong.`);
+    diagnose(findTable(), `Could not read the status dot of ${unknown} of ${data.length} ATMs, so the PROBLEM IN ATM list would be wrong.`);
     return;
   }
 
@@ -398,11 +406,14 @@
 
   // Every value is written as text, exactly as the website shows it (e.g. 1`065`000.00),
   // the same as copy-paste; the macro's CleanNprValue converts the balances itself.
+  // The STA cell shows the state in the website's colour (style ids from styles.xml below).
+  const STATE_STYLE = { OPEN: 2, CLOSED: 3, OFFLINE: 4, SUPERVISOR: 5, REPLENISHMENT: 6 };
   const sheetXml = rowsData => {
     const rows = [...header, ...rowsData];
     const h = header.length;
+    const style = (ri, ci, v) => ri < h ? 1 : ci === 0 ? STATE_STYLE[v] || 0 : 0;
     const xmlRows = rows.map((r, ri) => `<row r="${ri + 1}">` + r.map((v, ci) => v
-      ? `<c r="${colName(ci)}${ri + 1}"${ri < h ? ' s="1"' : ''} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`
+      ? `<c r="${colName(ci)}${ri + 1}"${style(ri, ci, v) ? ` s="${style(ri, ci, v)}"` : ''} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`
       : '').join('') + '</row>').join('');
     const colWidths = range(width, i => Math.min(40, Math.max(6, ...rows.slice(h - 1).map(r => String(r[i] || '').length + 2))));
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -439,16 +450,23 @@
       '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
     'xl/styles.xml': '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-      '<fonts count="2"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font></fonts>' +
-      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
-      '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+      '<fonts count="3"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font>' +
+      '<font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>' +
+      // fills: 2 header, 3 green OPEN, 4 red CLOSED, 5 black OFFLINE, 6 blue SUPERVISOR, 7 amber REPLENISHMENT
+      '<fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+      ['FFD9E1F2', 'FF00B050', 'FFFF0000', 'FF000000', 'FF0070C0', 'FFFFC000']
+        .map(c => `<fill><patternFill patternType="solid"><fgColor rgb="${c}"/><bgColor indexed="64"/></patternFill></fill>`).join('') +
+      '</fills>' +
       '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-      '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
-      '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>' +
+      // cell styles: 0 normal, 1 header, 2..6 = STATE_STYLE (OPEN, CLOSED, OFFLINE, SUPERVISOR, REPLENISHMENT)
+      '<cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+      [[1, 2], [2, 3], [2, 4], [2, 5], [2, 6], [1, 7]]
+        .map(([font, fill]) => `<xf numFmtId="0" fontId="${font}" fillId="${fill}" borderId="0" xfId="0" applyFont="1" applyFill="1"/>`).join('') +
+      '</cellXfs>' +
       '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
     'xl/worksheets/sheet1.xml': sheetXml(data),
-    'xl/worksheets/sheet2.xml': sheetXml(red),
+    'xl/worksheets/sheet2.xml': sheetXml(problem),
   };
 
   // Minimal ZIP writer (stored, no compression) - an .xlsx is just a zip of these XML files
@@ -482,8 +500,9 @@
   const fileName = `ATM_SWITCH_DATA_${stamp}.xlsx`;
   download(fileName, new Blob([...parts, ...central, new Uint8Array(end.buffer)],
     { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-  console.log(`Done: ${data.length} ATMs, ${red.length} red, from ${page} page(s) -> ${fileName}`);
-  alert(`Exported ${data.length} ATMs from ${page} page(s).\n` +
-        `Raw Switch Data: ${data.length} ATMs\nPROBLEM IN ATM: ${red.length} red/offline ATMs` +
-        (maint ? `\n(${maint} in Supervisor/Replenishment - not in PROBLEM IN ATM)` : '') + `\n\nFile: ${fileName}`);
+  console.log(`Done: ${data.length} ATMs, ${problem.length} problem, from ${page} page(s) -> ${fileName}`);
+  alert(`Exported ${data.length} ATMs from ${page} page(s).\n\n` +
+        `Open (green): ${count('OPEN')}\nClosed (red): ${count('CLOSED')}\nOffline (black): ${count('OFFLINE')}\n` +
+        `Supervisor (blue): ${count('SUPERVISOR')}` + (count('REPLENISHMENT') ? `\nReplenishment: ${count('REPLENISHMENT')}` : '') +
+        `\n\nPROBLEM IN ATM (offline + closed + supervisor): ${problem.length}\n\nFile: ${fileName}`);
 })();
