@@ -6,9 +6,10 @@
  * How it reads the error details: first from the page itself (tooltip text that is already
  * there but hidden), otherwise by hovering each red error icon the way the mouse does and
  * reading the "Devices errors details for ..." box that appears.
- * It goes through every page (like Export ATMs, also when the page auto-refreshes) and
- * finally lists every Dispenser-down ATM. Whether the ticks on earlier pages are kept after
- * changing page depends on the website - the message says how to check.
+ * It goes through every page (like Export ATMs, also when the page auto-refreshes) reading
+ * the DEV and DISP error icons, then lists every Dispenser-down ATM. The website keeps ticks
+ * only on the page on screen, so it ticks only the ones on the page it ends on and lists the
+ * others; to tick them all, filter Problems > Dispenser first so they fit on one page.
  */
 (async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -62,11 +63,13 @@
   }
 
   const isErrorIcon = img => !/square|cassette|info/i.test(img.getAttribute('src') || '');
-  function errorColumns(table) {  // DEV / DISP, from the header
+  // DEV / DISP columns from the header; headings are compared on letters only ("DISP ⇕" = DISP)
+  const letters = s => clean(s).toUpperCase().replace(/[^A-Z]/g, '');
+  function errorColumns(table) {
     let cols = [];
     for (const tr of [...table.rows].filter(r => !isPager(r) && (r.closest('thead') || r.querySelector('th')))) {
-      const idx = [...tr.cells].map((c, i) => /^(DEV|DISP)$/i.test(clean(c.innerText)) ? i : -1).filter(i => i >= 0);
-      if (idx.length && [...tr.cells].some(c => /^NAME$/i.test(clean(c.innerText)))) cols = idx;
+      const idx = [...tr.cells].map((c, i) => ['DEV', 'DISP'].includes(letters(c.innerText)) ? i : -1).filter(i => i >= 0);
+      if (idx.length && [...tr.cells].some(c => letters(c.innerText) === 'NAME')) cols = idx;
     }
     return cols;
   }
@@ -86,7 +89,9 @@
       const pid = (tid.match(/\((\d+)\)/) || [])[1] || '';
       const name = clean((cells[cells.indexOf(tidCell) - 1] || {}).innerText);
       const t0 = cells.indexOf(tidCell);
-      const iconCells = (errCols.length ? errCols.map(i => cells[i]) : cells.slice(t0 + 2, t0 + 4))
+      // DEV and DISP: the header columns plus the two cells after REMOTE ADDRESS
+      const cand = new Set([...errCols, t0 + 2, t0 + 3]);
+      const iconCells = [...cand].map(i => cells[i])
         .filter(td => td && [...td.querySelectorAll('img')].some(isErrorIcon));
       if (!iconCells.length) { checkedTids.add(tid); continue; }
       let text = iconCells.map(textInCell).join(' | ');
@@ -102,12 +107,8 @@
       checkedTids.add(tid);
       if (!/details|dispenser|error|reader|printer|down/i.test(text)) { unread.set(tid, name); continue; }
       unread.delete(tid);
-      if (DOWN_RE.test(text)) {
-        const box = cells[1] && cells[1].querySelector('input[type=checkbox]');
-        if (box && !box.checked && box.isConnected) box.click();
-        tr.style.outline = '3px solid #ff9800';
-        found.set(tid, { name, page: pageNo, ticked: !!box });
-      }
+      // nothing is ticked while scanning: the website forgets ticks when the page changes
+      if (DOWN_RE.test(text)) found.set(tid, { name, page: pageNo });
     }
     return true;
   }
@@ -189,11 +190,44 @@
     idle = checkedTids.size > n ? 0 : idle + 1;
   }
 
+  // ---------- tick the ones on the page now on screen ----------
+  // (ticks are kept only on the page you are on, so only these can be selected together)
+  await sleep(500);
+  const tickedNow = [], elsewhere = [];
+  const tickRows = () => {
+    const t = findTable();
+    const map = new Map();
+    for (const tr of (t ? dataRows(t) : [])) {
+      const tidCell = [...tr.cells].find(td => /^PRV\d+/i.test(clean(td.innerText)));
+      if (tidCell) map.set(clean(tidCell.innerText), tr);
+    }
+    return map;
+  };
+  let onScreen = tickRows();
+  for (const [tid] of found) {
+    const tr = onScreen.get(tid);
+    const box = tr && tr.cells[1] && tr.cells[1].querySelector('input[type=checkbox]');
+    if (box) {
+      if (!box.checked) box.click();
+      tr.style.outline = '3px solid #ff9800';
+    }
+  }
+  await sleep(1500);  // make sure the ticks stayed (no refresh / re-draw in between)
+  onScreen = tickRows();
+  for (const [tid, v] of found) {
+    const tr = onScreen.get(tid);
+    const box = tr && tr.cells[1] && tr.cells[1].querySelector('input[type=checkbox]');
+    if (box && box.checked) tickedNow.push(`${tid}  ${v.name}`); else elsewhere.push(`${tid}  ${v.name}  (page ${v.page})`);
+  }
+
   // ---------- report ----------
-  const list = [...found].map(([tid, v]) => `${tid}  ${v.name}  (page ${v.page})`);
-  let msg = list.length
-    ? `"Dispenser down" on ${list.length} ATM(s):\n\n${list.join('\n')}\n\n` +
-      'Their boxes were ticked page by page (orange border). Nothing was sent.'
+  let msg = found.size
+    ? `"Dispenser down" on ${found.size} ATM(s).\n\n` +
+      (tickedNow.length ? `TICKED on the page now on screen (${tickedNow.length}):\n${tickedNow.join('\n')}\n\n` : '') +
+      (elsewhere.length ? `NOT ticked - on other pages (${elsewhere.length}):\n${elsewhere.join('\n')}\n\n` +
+        'The website keeps ticks only on the page you are on. To select them all at once: in the filter tick ' +
+        'Problems > Dispenser, click Search (they then fit on one page), and click this bookmark again.\n\n' : '') +
+      'Nothing was sent. Check the ticks, then use Group management and choose the command yourself.'
     : 'No ATM shows "Dispenser down".';
   msg += `\n\nChecked ${checkedTids.size}${expected ? ' of ' + expected : ''} ATMs on ${visited.size} page(s).`;
   if (expected && checkedTids.size < expected) msg += ' Not all ATMs could be checked - run it again.';
@@ -201,11 +235,6 @@
     msg += `\n\nCould not read the error details of ${unread.size} ATM(s) with a red icon:\n` +
       [...unread].slice(0, 10).map(([t, n]) => `${t} ${n}`).join('\n') +
       '\nHover one of them and send a photo so this can be fixed.';
-  }
-  if (list.length && visited.size > 1) {
-    msg += '\n\nBefore sending a command: go back to an earlier page and check its ticks are still there. ' +
-      'If they are gone, the website keeps ticks only on the page you are on - then filter ' +
-      'Problems > Dispenser (Search) so they are all on one page and click this bookmark again.';
   }
   alert(msg);
 })();
