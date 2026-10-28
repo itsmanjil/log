@@ -51,6 +51,15 @@ nothing is marked.
 - **The macro shows an error:** take a photo of the message. Raw Switch Data and PROBLEM IN ATM are left unchanged if the file is not a valid export.
 - You can always go back to copy-paste plus the original **Run 1 PM Report** / **Run 8 PM Report** macros; they are unchanged.
 
+## Find "Dispenser down" ATMs (tick only, never sends)
+
+`bookmarklet_dispenser_down.txt` (from `find_dispenser_down.js`) is a second bookmark, **Find Dispenser Down**.
+On the ATM Monitoring page it reads each red DEV / DISP error icon's details (from the page, or by hovering it the
+way the mouse does), ticks the checkbox of every ATM whose details say **Dispenser down**, outlines those rows in
+orange and lists them. It never clicks Send commands / Group management: you check the list and choose the
+command (e.g. Close and block) yourself. Only the page on screen is checked - filter Problems > Dispenser first
+to get them all on one page.
+
 ## Mail branches about ATMs that are down
 
 `Module_DownAtmMail.bas` adds the **Mail Down ATMs (1 hr+)** button (CONTROL sheet, under Run 1 PM / Run 8 PM).
