@@ -7,9 +7,9 @@
  * there but hidden), otherwise by hovering each red error icon the way the mouse does and
  * reading the "Devices errors details for ..." box that appears.
  * It goes through every page (like Export ATMs, also when the page auto-refreshes) reading
- * the DEV and DISP error icons, then lists every Dispenser-down ATM. The website keeps ticks
+ * the DEV (device problem) error icons, then lists every Dispenser-down ATM. The website keeps ticks
  * only on the page on screen, so it ticks only the ones on the page it ends on and lists the
- * others; to tick them all, filter Problems > Dispenser first so they fit on one page.
+ * others; to tick them all, click DEV (all device problems on one page) first.
  */
 (async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -63,12 +63,12 @@
   }
 
   const isErrorIcon = img => !/square|cassette|info/i.test(img.getAttribute('src') || '');
-  // DEV / DISP columns from the header; headings are compared on letters only ("DISP ⇕" = DISP)
+  // DEV column from the header; headings are compared on letters only ("DEV ⇕" = DEV)
   const letters = s => clean(s).toUpperCase().replace(/[^A-Z]/g, '');
   function errorColumns(table) {
     let cols = [];
     for (const tr of [...table.rows].filter(r => !isPager(r) && (r.closest('thead') || r.querySelector('th')))) {
-      const idx = [...tr.cells].map((c, i) => ['DEV', 'DISP'].includes(letters(c.innerText)) ? i : -1).filter(i => i >= 0);
+      const idx = [...tr.cells].map((c, i) => letters(c.innerText) === 'DEV' ? i : -1).filter(i => i >= 0);
       if (idx.length && [...tr.cells].some(c => letters(c.innerText) === 'NAME')) cols = idx;
     }
     return cols;
@@ -89,8 +89,8 @@
       const pid = (tid.match(/\((\d+)\)/) || [])[1] || '';
       const name = clean((cells[cells.indexOf(tidCell) - 1] || {}).innerText);
       const t0 = cells.indexOf(tidCell);
-      // DEV and DISP: the header columns plus the two cells after REMOTE ADDRESS
-      const cand = new Set([...errCols, t0 + 2, t0 + 3]);
+      // DEV only: the header column (else the cell right after REMOTE ADDRESS)
+      const cand = new Set(errCols.length ? errCols : [t0 + 2]);
       const iconCells = [...cand].map(i => cells[i])
         .filter(td => td && [...td.querySelectorAll('img')].some(isErrorIcon));
       if (!iconCells.length) { checkedTids.add(tid); continue; }
@@ -225,8 +225,8 @@
     ? `"Dispenser down" on ${found.size} ATM(s).\n\n` +
       (tickedNow.length ? `TICKED on the page now on screen (${tickedNow.length}):\n${tickedNow.join('\n')}\n\n` : '') +
       (elsewhere.length ? `NOT ticked - on other pages (${elsewhere.length}):\n${elsewhere.join('\n')}\n\n` +
-        'The website keeps ticks only on the page you are on. To select them all at once: in the filter tick ' +
-        'Problems > Dispenser, click Search (they then fit on one page), and click this bookmark again.\n\n' : '') +
+        'The website keeps ticks only on the page you are on. To select them all at once: click DEV to show ' +
+        'all device problems on one page (or filter Problems > Dispenser), then click this bookmark again.\n\n' : '') +
       'Nothing was sent. Check the ticks, then use Group management and choose the command yourself.'
     : 'No ATM shows "Dispenser down".';
   msg += `\n\nChecked ${checkedTids.size}${expected ? ' of ' + expected : ''} ATMs on ${visited.size} page(s).`;
