@@ -48,7 +48,7 @@ Private Const E_LAST As Long = 6
 
 ' Item fields
 Private Const I_TERMINAL = 0, I_BRANCH = 1, I_TO = 2, I_LINK = 3, I_EMAILROW = 4, I_STATUS = 5, _
-              I_ISSUE = 6, I_DOWNFOR = 7, I_PHONE = 8
+              I_ISSUE = 6, I_DOWNFOR = 7, I_PHONE = 8, I_SUBJECT = 9, I_CC = 10
 
 Public Sub MailDownAtms()
     Dim wbReport As Workbook
@@ -56,6 +56,7 @@ Public Sub MailDownAtms()
     Dim m As Variant
     Dim ready As Long, msg As String, notSent As String
     Dim wsMail As Worksheet
+    Dim firstOk As Variant
 
     If Not HasSheet(ThisWorkbook, EMAIL_SHEET) Then
         CreateEmailSheet
@@ -74,6 +75,7 @@ Public Sub MailDownAtms()
     For Each m In mails
         If m(I_STATUS) = "OK" Then
             ready = ready + 1
+            If ready = 1 Then firstOk = m
             msg = msg & vbCrLf & "    " & m(I_TERMINAL) & "  " & m(I_BRANCH) & "  (" & m(I_ISSUE) & ", down " & m(I_DOWNFOR) & ")"
         Else
             notSent = notSent & vbCrLf & "    " & m(I_TERMINAL) & "  " & m(I_BRANCH) & "  - " & m(I_STATUS) & _
@@ -95,7 +97,13 @@ Public Sub MailDownAtms()
 
     msg = "Open " & ready & " email(s) in Outlook for ATMs down " & HoursText() & " or more (" & wbReport.Name & "):" & msg
     If Len(notSent) > 0 Then msg = msg & vbCrLf & vbCrLf & "Not mailed:" & notSent
-    msg = msg & vbCrLf & vbCrLf & "Each mail opens in Chrome ready to send - check it and click Send."
+    ' show what the ATM EMAIL settings produce, so changes there are visible before sending
+    msg = msg & vbCrLf & vbCrLf & "First mail:" & vbCrLf & _
+          "    To: " & firstOk(I_TO) & vbCrLf & _
+          "    CC: " & IIf(Len(firstOk(I_CC)) > 0, firstOk(I_CC), "(none - cell B4 on " & EMAIL_SHEET & ")") & vbCrLf & _
+          "    Subject: " & firstOk(I_SUBJECT)
+    msg = msg & vbCrLf & vbCrLf & "Each mail opens in Chrome ready to send - check it and click Send." & vbCrLf & _
+          "If Outlook leaves the CC box empty, add the CC address in Outlook before sending."
     If MsgBox(msg, vbQuestion + vbYesNo, "Mail Down ATMs") <> vbYes Then Exit Sub
 
     Set wsMail = ThisWorkbook.Worksheets(EMAIL_SHEET)
@@ -129,7 +137,7 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
     Dim ws As Worksheet, wsMail As Worksheet
     Dim emailRow As Object, seen As Object
     Dim r As Long, lastRow As Long, row As Long, startRow As Long
-    Dim t As String, toAddr As String, cc As String, status As String, phone As String
+    Dim t As String, toAddr As String, cc As String, status As String, phone As String, subj As String
     Dim owa As String, ccAll As String, subjTpl As String, bodyTpl As String
     Dim downSince As Date, minHours As Double, hoursDown As Double
     Dim result As New Collection
@@ -147,7 +155,7 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
     Next r
 
     owa = Trim$(CStr(wsMail.Cells(ROW_OWA, 2).Value))
-    ccAll = Trim$(CStr(wsMail.Cells(ROW_CC, 2).Value))
+    ccAll = CleanAddresses(CStr(wsMail.Cells(ROW_CC, 2).Value))
     minHours = MinDownHours()
     subjTpl = CStr(wsMail.Cells(ROW_SUBJECT, 2).Value)
     bodyTpl = CStr(wsMail.Cells(ROW_BODY, 2).Value)
@@ -171,8 +179,8 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
                     row = 0: toAddr = "": cc = ccAll: phone = ""
                     If emailRow.Exists(t) Then
                         row = emailRow(t)
-                        toAddr = Trim$(CStr(wsMail.Cells(row, E_TO).Value))
-                        cc = JoinAddresses(Trim$(CStr(wsMail.Cells(row, E_CC).Value)), ccAll)
+                        toAddr = CleanAddresses(CStr(wsMail.Cells(row, E_TO).Value))
+                        cc = JoinAddresses(CStr(wsMail.Cells(row, E_CC).Value), ccAll)
                         phone = Trim$(CStr(wsMail.Cells(row, E_PHONE).Value))
                     End If
 
@@ -185,10 +193,10 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
                         status = "OK"
                     End If
 
+                    subj = FillTemplate(subjTpl, ws, r, downSince, hoursDown, phone)
                     result.Add Array(t, Trim$(CStr(ws.Cells(r, COL_BRANCH).Value)), toAddr, _
-                        ComposeLink(owa, toAddr, cc, FillTemplate(subjTpl, ws, r, downSince, hoursDown, phone), _
-                                    FillTemplate(bodyTpl, ws, r, downSince, hoursDown, phone)), _
-                        row, status, IssueOf(ws, r), DurationText(hoursDown), phone)
+                        ComposeLink(owa, toAddr, cc, subj, FillTemplate(bodyTpl, ws, r, downSince, hoursDown, phone)), _
+                        row, status, IssueOf(ws, r), DurationText(hoursDown), phone, subj, cc)
                 End If
             End If
         End If
@@ -312,11 +320,19 @@ Private Function Enc(ByVal s As String) As String
 End Function
 
 Private Function JoinAddresses(ByVal a As String, ByVal b As String) As String
-    If Len(a) > 0 And Len(b) > 0 Then
-        JoinAddresses = a & ";" & b
-    Else
-        JoinAddresses = a & b
-    End If
+    JoinAddresses = CleanAddresses(a & "," & b)
+End Function
+
+' "a@x.com; b@y.com" (any mix of ; , spaces or line breaks) -> "a@x.com,b@y.com",
+' the separator Outlook on the web expects in the To / CC of a compose link.
+Private Function CleanAddresses(ByVal s As String) As String
+    s = Replace(Replace(Replace(Replace(s, ";", ","), vbCr, ","), vbLf, ","), " ", ",")
+    Do While InStr(s, ",,") > 0
+        s = Replace(s, ",,", ",")
+    Loop
+    If Left$(s, 1) = "," Then s = Mid$(s, 2)
+    If Right$(s, 1) = "," Then s = Left$(s, Len(s) - 1)
+    CleanAddresses = s
 End Function
 
 ' Today's daily report if it is open, else the only open daily report, else ask.
