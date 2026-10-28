@@ -480,8 +480,8 @@ Private Sub WriteSettings(ByVal ws As Worksheet, ByVal isNew As Boolean)
     If isNew Then ws.Cells(ROW_BODY, 2).Value = DefaultBody()
     ws.Cells(ROW_BODY, 3).Value = "Used when B8 = NO (one mail per ATM). Placeholders: {TERMINAL} {BRANCH} {ISSUE} {DATE} {TIME} {DOWNFOR} {VENDOR} {REMARKS} {PHONE}. Alt+Enter = new line."
     ws.Cells(ROW_ONEMAIL, 1).Value = "All ATMs in one mail"
-    If isNew Or Len(Trim$(CStr(ws.Cells(ROW_ONEMAIL, 2).Value))) = 0 Then ws.Cells(ROW_ONEMAIL, 2).Value = "YES"
-    ws.Cells(ROW_ONEMAIL, 3).Value = "YES = one mail listing every ATM (To = all their branches). NO = one mail per ATM."
+    If isNew Or Len(Trim$(CStr(ws.Cells(ROW_ONEMAIL, 2).Value))) = 0 Then ws.Cells(ROW_ONEMAIL, 2).Value = "NO"
+    ws.Cells(ROW_ONEMAIL, 3).Value = "NO = one mail per ATM (default). YES = one mail listing every ATM (To = all their branches)."
     ws.Cells(ROW_ONESUBJECT, 1).Value = "Subject (one mail)"
     If isNew Or Len(Trim$(CStr(ws.Cells(ROW_ONESUBJECT, 2).Value))) = 0 Then ws.Cells(ROW_ONESUBJECT, 2).Value = DefaultOneSubject()
     ws.Cells(ROW_ONESUBJECT, 3).Value = "Placeholders: {COUNT} {DATE} {TIME}"
@@ -505,7 +505,7 @@ Private Function DefaultLine() As String
 End Function
 
 Private Function OneMailMode() As Boolean
-    OneMailMode = UCase$(Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_ONEMAIL, 2).Value))) <> "NO"
+    OneMailMode = UCase$(Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_ONEMAIL, 2).Value))) = "YES"
 End Function
 
 ' One mail for every ATM to mail now (skips ATMs already mailed today): To = all their
