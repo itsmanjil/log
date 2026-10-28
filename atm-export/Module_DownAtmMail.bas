@@ -26,6 +26,9 @@ Private Const ROW_CC As Long = 4
 Private Const ROW_HOURS As Long = 5
 Private Const ROW_SUBJECT As Long = 6
 Private Const ROW_BODY As Long = 7
+Private Const ROW_ONEMAIL As Long = 8          ' YES = all ATMs in one mail
+Private Const ROW_ONESUBJECT As Long = 9      ' subject of that one mail
+Private Const ROW_LINE As Long = 10           ' one line per ATM in that mail
 Private Const DEFAULT_OWA As String = "https://outlook.office.com/mail/"
 
 ' Daily report columns
@@ -48,7 +51,7 @@ Private Const E_LAST As Long = 6
 
 ' Item fields
 Private Const I_TERMINAL = 0, I_BRANCH = 1, I_TO = 2, I_LINK = 3, I_EMAILROW = 4, I_STATUS = 5, _
-              I_ISSUE = 6, I_DOWNFOR = 7, I_PHONE = 8, I_SUBJECT = 9, I_CC = 10
+              I_ISSUE = 6, I_DOWNFOR = 7, I_PHONE = 8, I_SUBJECT = 9, I_CC = 10, I_LINE = 11
 
 Public Sub MailDownAtms()
     Dim wbReport As Workbook
@@ -88,6 +91,10 @@ Public Sub MailDownAtms()
                " or more (red rows, ATMs already up and no-transaction / CHECK ATM rows are not counted).", vbInformation, "Mail Down ATMs"
         Exit Sub
     End If
+    If OneMailMode() Then
+        MailAllInOne mails, wbReport
+        Exit Sub
+    End If
     If ready = 0 Then
         MsgBox "Nothing to mail from " & wbReport.Name & ":" & notSent & vbCrLf & vbCrLf & _
                "Add missing emails on the '" & EMAIL_SHEET & "' sheet. To mail an ATM again today, clear its 'Last mailed' cell.", _
@@ -124,7 +131,12 @@ Public Function DownAtmMailList(ByVal reportPath As String) As String
 
     UpgradeEmailSheet
     Set wb = OpenWorkbookByPath(reportPath, opened)
-    For Each m In BuildMails(wb)
+    Dim mails As Collection, toAddr As String, cc As String, subj As String, body As String, n As Long, skipped As String
+    Set mails = BuildMails(wb)
+    If OneMailMode() Then
+        out = "ONE MAIL" & vbTab & BuildOneMail(mails, toAddr, cc, subj, body, n, skipped) & vbTab & toAddr & vbTab & cc & vbTab & n & vbLf
+    End If
+    For Each m In mails
         out = out & m(I_TERMINAL) & vbTab & m(I_STATUS) & vbTab & m(I_TO) & vbTab & m(I_ISSUE) & vbTab & _
               m(I_DOWNFOR) & vbTab & m(I_LINK) & vbLf
     Next m
@@ -138,7 +150,7 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
     Dim emailRow As Object, seen As Object
     Dim r As Long, lastRow As Long, row As Long, startRow As Long
     Dim t As String, toAddr As String, cc As String, status As String, phone As String, subj As String
-    Dim owa As String, ccAll As String, subjTpl As String, bodyTpl As String
+    Dim owa As String, ccAll As String, subjTpl As String, bodyTpl As String, lineTpl As String
     Dim downSince As Date, minHours As Double, hoursDown As Double
     Dim result As New Collection
 
@@ -159,6 +171,8 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
     minHours = MinDownHours()
     subjTpl = CStr(wsMail.Cells(ROW_SUBJECT, 2).Value)
     bodyTpl = CStr(wsMail.Cells(ROW_BODY, 2).Value)
+    lineTpl = CStr(wsMail.Cells(ROW_LINE, 2).Value)
+    If Len(Trim$(lineTpl)) = 0 Then lineTpl = DefaultLine()
 
     ' only the latest section: rows after the last "ATM DOWN REPORT ..." title
     lastRow = ws.Cells(ws.Rows.Count, COL_TERMINAL).End(xlUp).Row
@@ -196,7 +210,8 @@ Private Function BuildMails(ByVal wbReport As Workbook) As Collection
                     subj = FillTemplate(subjTpl, ws, r, downSince, hoursDown, phone)
                     result.Add Array(t, Trim$(CStr(ws.Cells(r, COL_BRANCH).Value)), toAddr, _
                         ComposeLink(owa, toAddr, cc, subj, FillTemplate(bodyTpl, ws, r, downSince, hoursDown, phone)), _
-                        row, status, IssueOf(ws, r), DurationText(hoursDown), phone, subj, cc)
+                        row, status, IssueOf(ws, r), DurationText(hoursDown), phone, subj, cc, _
+                        FillTemplate(lineTpl, ws, r, downSince, hoursDown, phone))
                 End If
             End If
         End If
@@ -463,14 +478,137 @@ Private Sub WriteSettings(ByVal ws As Worksheet, ByVal isNew As Boolean)
     If isNew Then ws.Cells(ROW_SUBJECT, 2).Value = DefaultSubject()
     ws.Cells(ROW_BODY, 1).Value = "Message"
     If isNew Then ws.Cells(ROW_BODY, 2).Value = DefaultBody()
-    ws.Cells(ROW_BODY, 3).Value = "Placeholders: {TERMINAL} {BRANCH} {ISSUE} {DATE} {TIME} {DOWNFOR} {VENDOR} {REMARKS} {PHONE}. Alt+Enter = new line."
-    ws.Range(ws.Cells(ROW_OWA, 1), ws.Cells(ROW_BODY, 1)).Font.Bold = True
-    ws.Range(ws.Cells(ROW_OWA, 3), ws.Cells(ROW_BODY, 3)).Font.Italic = True
-    ws.Range(ws.Cells(ROW_OWA, 3), ws.Cells(ROW_BODY, 3)).Font.Color = RGB(89, 89, 89)
-    ws.Range(ws.Cells(ROW_OWA, 2), ws.Cells(ROW_BODY, 2)).Interior.Color = RGB(255, 242, 204)
+    ws.Cells(ROW_BODY, 3).Value = "Used when B8 = NO (one mail per ATM). Placeholders: {TERMINAL} {BRANCH} {ISSUE} {DATE} {TIME} {DOWNFOR} {VENDOR} {REMARKS} {PHONE}. Alt+Enter = new line."
+    ws.Cells(ROW_ONEMAIL, 1).Value = "All ATMs in one mail"
+    If isNew Or Len(Trim$(CStr(ws.Cells(ROW_ONEMAIL, 2).Value))) = 0 Then ws.Cells(ROW_ONEMAIL, 2).Value = "YES"
+    ws.Cells(ROW_ONEMAIL, 3).Value = "YES = one mail listing every ATM (To = all their branches). NO = one mail per ATM."
+    ws.Cells(ROW_ONESUBJECT, 1).Value = "Subject (one mail)"
+    If isNew Or Len(Trim$(CStr(ws.Cells(ROW_ONESUBJECT, 2).Value))) = 0 Then ws.Cells(ROW_ONESUBJECT, 2).Value = DefaultOneSubject()
+    ws.Cells(ROW_ONESUBJECT, 3).Value = "Placeholders: {COUNT} {DATE} {TIME}"
+    ws.Cells(ROW_LINE, 1).Value = "Line per ATM (one mail)"
+    If isNew Or Len(Trim$(CStr(ws.Cells(ROW_LINE, 2).Value))) = 0 Then ws.Cells(ROW_LINE, 2).Value = DefaultLine()
+    ws.Cells(ROW_LINE, 3).Value = "Same placeholders as the Message"
+    ws.Range(ws.Cells(ROW_OWA, 1), ws.Cells(ROW_LINE, 1)).Font.Bold = True
+    ws.Range(ws.Cells(ROW_OWA, 3), ws.Cells(ROW_LINE, 3)).Font.Italic = True
+    ws.Range(ws.Cells(ROW_OWA, 3), ws.Cells(ROW_LINE, 3)).Font.Color = RGB(89, 89, 89)
+    ws.Range(ws.Cells(ROW_OWA, 2), ws.Cells(ROW_LINE, 2)).Interior.Color = RGB(255, 242, 204)
     ws.Cells(ROW_BODY, 2).WrapText = True
     ws.Rows(ROW_BODY).RowHeight = 60
 End Sub
+
+Private Function DefaultOneSubject() As String
+    DefaultOneSubject = "ATM Down - {COUNT} ATM(s) - {DATE} {TIME}"
+End Function
+
+Private Function DefaultLine() As String
+    DefaultLine = "{TERMINAL} - {BRANCH} - {ISSUE} - down since {DATE} {TIME} ({DOWNFOR})"
+End Function
+
+Private Function OneMailMode() As Boolean
+    OneMailMode = UCase$(Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_ONEMAIL, 2).Value))) <> "NO"
+End Function
+
+' One mail for every ATM to mail now (skips ATMs already mailed today): To = all their
+' branch addresses, CC = their CCs + Always CC, body = one line per ATM. Returns the link.
+Private Function BuildOneMail(ByVal mails As Collection, ByRef toAddr As String, ByRef cc As String, _
+                              ByRef subj As String, ByRef body As String, ByRef n As Long, _
+                              ByRef skipped As String) As String
+    Dim m As Variant, a As Variant
+    Dim toList As Object, ccList As Object
+    Dim lines As String
+    Dim wsMail As Worksheet
+
+    Set wsMail = ThisWorkbook.Worksheets(EMAIL_SHEET)
+    Set toList = CreateObject("Scripting.Dictionary"): toList.CompareMode = 1
+    Set ccList = CreateObject("Scripting.Dictionary"): ccList.CompareMode = 1
+    n = 0: skipped = vbNullString
+    For Each m In mails
+        If m(I_STATUS) = "MAILED TODAY" Then
+            skipped = skipped & vbCrLf & "    " & m(I_TERMINAL) & "  " & m(I_BRANCH)
+        Else
+            n = n + 1
+            lines = lines & vbCrLf & m(I_LINE)
+            For Each a In Split(CStr(m(I_TO)), ",")
+                If Len(a) > 0 Then toList(a) = True
+            Next a
+            For Each a In Split(CStr(m(I_CC)), ",")
+                If Len(a) > 0 And Not toList.Exists(a) Then ccList(a) = True
+            Next a
+        End If
+    Next m
+    toAddr = Join(toList.Keys, ",")
+    cc = Join(ccList.Keys, ",")
+    subj = CStr(wsMail.Cells(ROW_ONESUBJECT, 2).Value)
+    If Len(Trim$(subj)) = 0 Then subj = DefaultOneSubject()
+    subj = Replace(subj, "{COUNT}", CStr(n), , , vbTextCompare)
+    subj = Replace(subj, "{DATE}", Format$(Date, "dd/mm/yyyy"), , , vbTextCompare)
+    subj = Replace(subj, "{TIME}", Format$(Now, "h:mm AM/PM"), , , vbTextCompare)
+    body = "The following ATM(s) have been down for " & HoursText() & " or more:" & vbCrLf & lines & vbCrLf & vbCrLf & _
+           "Please check your ATM and update us as soon as possible."
+    BuildOneMail = ComposeLink(Trim$(CStr(wsMail.Cells(ROW_OWA, 2).Value)), toAddr, cc, subj, body)
+End Function
+
+Private Sub MailAllInOne(ByVal mails As Collection, ByVal wbReport As Workbook)
+    Dim toAddr As String, cc As String, subj As String, body As String, skipped As String
+    Dim link As String, msg As String, noEmail As String, listText As String
+    Dim n As Long, pasted As Boolean
+    Dim m As Variant
+    Dim wsMail As Worksheet
+
+    link = BuildOneMail(mails, toAddr, cc, subj, body, n, skipped)
+    If n = 0 Then
+        MsgBox "All these ATMs were already mailed today:" & skipped & vbCrLf & vbCrLf & _
+               "To mail them again, clear their 'Last mailed' cells on the '" & EMAIL_SHEET & "' sheet.", _
+               vbInformation, "Mail Down ATMs"
+        Exit Sub
+    End If
+    For Each m In mails
+        If m(I_STATUS) <> "MAILED TODAY" Then listText = listText & vbCrLf & "    " & m(I_LINE)
+        If m(I_STATUS) = "NO EMAIL" Then
+            noEmail = noEmail & vbCrLf & "    " & m(I_TERMINAL) & "  " & m(I_BRANCH) & _
+                      IIf(Len(m(I_PHONE)) > 0, "  phone " & m(I_PHONE), "")
+        End If
+    Next m
+
+    msg = "Open ONE email in Outlook listing " & n & " ATM(s) down " & HoursText() & " or more (" & wbReport.Name & "):" & _
+          listText & vbCrLf & vbCrLf & _
+          "To: " & IIf(Len(toAddr) > 0, toAddr, "(no branch emails - add them on " & EMAIL_SHEET & " or in Outlook)") & vbCrLf & _
+          "CC: " & IIf(Len(cc) > 0, cc, "(none)") & vbCrLf & _
+          "Subject: " & subj
+    If Len(noEmail) > 0 Then msg = msg & vbCrLf & vbCrLf & "Listed in the mail but no email address:" & noEmail
+    If Len(skipped) > 0 Then msg = msg & vbCrLf & vbCrLf & "Left out (already mailed today):" & skipped
+    msg = msg & vbCrLf & vbCrLf & "Check it and click Send - or close the Outlook window to keep it in Drafts and send it later."
+    If MsgBox(msg, vbQuestion + vbYesNo, "Mail Down ATMs") <> vbYes Then Exit Sub
+
+    ' Very long links can be cut off: then open the mail without the text and put
+    ' the text on the clipboard to paste.
+    If Len(link) > 12000 Then
+        pasted = PutOnClipboard(body)
+        link = ComposeLink(Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_OWA, 2).Value)), toAddr, cc, subj, "")
+    End If
+    CreateObject("Shell.Application").ShellExecute link
+    If pasted Then
+        MsgBox "The list is long, so it was copied instead: click in the mail text in Outlook and press Ctrl+V.", _
+               vbInformation, "Mail Down ATMs"
+    End If
+
+    Set wsMail = ThisWorkbook.Worksheets(EMAIL_SHEET)
+    For Each m In mails
+        If m(I_STATUS) <> "MAILED TODAY" And CLng(m(I_EMAILROW)) > 0 Then
+            wsMail.Cells(CLng(m(I_EMAILROW)), E_LAST).Value = Now
+            wsMail.Cells(CLng(m(I_EMAILROW)), E_LAST).NumberFormat = "dd/mm/yyyy hh:mm"
+        End If
+    Next m
+End Sub
+
+Private Function PutOnClipboard(ByVal s As String) As Boolean
+    On Error Resume Next
+    With CreateObject("new:{1C3B4210-F441-11CE-B9EA-00AA006B1A69}")  ' MSForms.DataObject
+        .SetText s
+        .PutInClipboard
+    End With
+    PutOnClipboard = (Err.Number = 0)
+End Function
 
 ' An ATM EMAIL sheet made by the first (dispenser-only) version has no Hours row
 ' and no Phone column: add them, keeping every address already typed in.
@@ -484,6 +622,8 @@ Private Sub UpgradeEmailSheet()
         If InStr(1, CStr(ws.Cells(ROW_BODY, 2).Value), "Your ATM {BRANCH} ({TERMINAL}) has been down since", vbTextCompare) > 0 Then
             ws.Cells(ROW_BODY, 2).Value = DefaultBody()
         End If
+        ' sheets made before the one-mail option: add its settings (rows 8-10)
+        If Len(Trim$(CStr(ws.Cells(ROW_ONEMAIL, 1).Value))) = 0 Then WriteSettings ws, False
         Exit Sub
     End If
     If StrComp(Trim$(CStr(ws.Cells(10, 1).Value)), "Terminal", vbTextCompare) <> 0 Then Exit Sub
