@@ -54,11 +54,11 @@ nothing is marked.
 ## Find "Dispenser down" ATMs (tick only, never sends)
 
 `bookmarklet_dispenser_down.txt` (from `find_dispenser_down.js`) is a second bookmark, **Find Dispenser Down**.
-On the ATM Monitoring page it reads each red DEV / DISP error icon's details (from the page, or by hovering it the
-way the mouse does), ticks the checkbox of every ATM whose details say **Dispenser down**, outlines those rows in
-orange and lists them. It never clicks Send commands / Group management: you check the list and choose the
-command (e.g. Close and block) yourself. Only the page on screen is checked - filter Problems > Dispenser first
-to get them all on one page.
+On the ATM Monitoring page it first clicks the DEV column heading (device problems come to the top), then
+reads each red DEV error icon's details (from the page, or by hovering it the way the mouse does), ticks the
+checkbox of every ATM whose details say **Dispenser down** (one at a time, checking each tick stuck), outlines
+those rows in orange and lists them. It never clicks Send commands / Group management: you check the list and
+choose the command (e.g. Close and block) yourself. Only the page on screen is checked.
 
 ## Mail branches about ATMs that are down
 

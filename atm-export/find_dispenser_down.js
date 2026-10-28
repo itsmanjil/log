@@ -3,8 +3,9 @@
  * It NEVER sends a command: after checking the list, open Group management and choose
  * the command yourself (e.g. "Open" or "Close and block").
  *
- * Only the page on screen and only the DEV (device problem) column are checked: click DEV on
- * the website first so all device problems are on one page, then click this bookmark.
+ * It first clicks the DEV (device problem) column heading so all device problems come to the
+ * top / on one page (twice if the first click puts them at the bottom), then checks only that
+ * page and only the DEV column.
  * The error details come from the page itself (tooltip text already there but hidden), or
  * from hovering each red DEV icon the way the mouse does and reading the
  * "Devices errors details for ..." box.
@@ -135,6 +136,50 @@
     return false;
   }
 
+  // ---------- click DEV first: all device problems come to the top / on one page ----------
+  const signature = () => {
+    const t = findTable();
+    const r = t ? dataRows(t) : [];
+    return r.length ? tidOf(r[0]) + '#' + tidOf(r[r.length - 1]) + '#' + r.length : '';
+  };
+  async function waitForChange(old) {
+    for (const start = Date.now(); Date.now() - start < 20000;) {
+      await sleep(300);
+      const s = signature();
+      if (s && s !== old) { await sleep(600); return true; }
+    }
+    return false;
+  }
+  function devHeader() {
+    const t = findTable();
+    for (const tr of [...t.rows].filter(r => !isPager(r) && (r.closest('thead') || r.querySelector('th')))) {
+      if (![...tr.cells].some(c => letters(c.innerText) === 'NAME')) continue;
+      const cell = [...tr.cells].find(c => letters(c.innerText) === 'DEV');
+      if (cell) return cell.querySelector('a, span[onclick], div[onclick], img[onclick]') || cell;
+    }
+    return null;
+  }
+  const devRowsOnTop = () => {   // are the first rows the ones with a red DEV icon?
+    const t = findTable();
+    const cols = devColumns(t);
+    const top = dataRows(t).slice(0, 3);
+    return top.length > 0 && top.every(tr => {
+      const cells = [...tr.cells];
+      const t0 = cells.findIndex(td => /^PRV\d+/i.test(clean(td.innerText)));
+      const td = cells[(cols.length ? cols[0] : t0 + 2)];
+      return td && [...td.querySelectorAll('img')].some(isErrorIcon);
+    });
+  };
+  let devClicks = 0;
+  for (let i = 0; i < 2 && !devRowsOnTop(); i++) {
+    const h = devHeader();
+    if (!h) break;
+    const before = signature();
+    h.click();
+    devClicks++;
+    await waitForChange(before);
+  }
+
   // ---------- read the page on screen (again if an auto-refresh interrupts) ----------
   let complete = false;
   for (let attempt = 0; attempt < 3 && !complete; attempt++) {
@@ -161,7 +206,9 @@
         `${notTicked.join('\n')}\n\n` : '') +
       'Nothing was sent. Open Group management: it should list the ticked ATMs. Check them, then choose the command yourself.'
     : 'No ATM on this page shows "Dispenser down" in the DEV column.';
-  msg += `\n\nChecked ${checked} ATMs on this page only (click DEV first to have all device problems on one page).`;
+  msg += `\n\nChecked ${checked} ATMs on this page` +
+    (devClicks ? ` (after clicking DEV ${devClicks}x so device problems come first).` : ' (device problems were already first).');
+  if (!devRowsOnTop()) msg += '\nNote: the device problems did not come to the top - click DEV yourself and run it again.';
   if (!complete) msg += '\nThe page kept refreshing while checking - click the bookmark again.';
   if (unread.size) {
     msg += `\n\nCould not read the error details of ${unread.size} ATM(s) with a red DEV icon:\n` +
