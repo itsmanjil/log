@@ -1,19 +1,22 @@
 /*
  * ATM Monitoring: find "Dispenser down" ATMs on the page on screen and tick their checkboxes.
  * It NEVER sends a command: after checking the list, open Group management and choose
- * the command yourself (e.g. "Close and block").
+ * the command yourself (e.g. "Open" or "Close and block").
  *
  * Only the page on screen and only the DEV (device problem) column are checked: click DEV on
  * the website first so all device problems are on one page, then click this bookmark.
- * How it reads the error details: first from the page itself (tooltip text that is already
- * there but hidden), otherwise by hovering each red DEV icon the way the mouse does and
- * reading the "Devices errors details for ..." box that appears.
+ * The error details come from the page itself (tooltip text already there but hidden), or
+ * from hovering each red DEV icon the way the mouse does and reading the
+ * "Devices errors details for ..." box.
+ * Each tick is sent to the website, so boxes are ticked one at a time: click, wait until the
+ * website has recorded it, check it is still ticked, try again if not.
  */
 (async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const clean = s => (s || '').replace(/\s+/g, ' ').trim();
   const PAGER = '.rich-datascr, .dr-dscr, .ui-paginator, [class*="datascr"], [class*="paginator"]';
   const DOWN_RE = /dispenser\s*down/i;
+  const TICK_WAIT_MS = 1200;  // time the website gets to record one tick
 
   function findTable() {
     let best = null, bestN = 0;
@@ -26,6 +29,12 @@
   const isPager = tr => !!tr.closest('tfoot') || !!tr.querySelector(PAGER);
   const dataRows = t => [...t.rows].filter(tr => !isPager(tr) && !tr.closest('thead') && !tr.querySelector('th') && tr.cells.length >= 6);
   if (!findTable()) { alert('Could not find the ATM table on this page.'); return; }
+  const tidOf = tr => {
+    const c = [...tr.cells].find(td => /^PRV\d+/i.test(clean(td.innerText)));
+    return c ? clean(c.innerText) : '';
+  };
+  const rowOf = tid => { const t = findTable(); return t ? dataRows(t).find(tr => tidOf(tr) === tid) : null; };
+  const boxOf = tr => tr && tr.cells[1] ? tr.cells[1].querySelector('input[type=checkbox]') : null;
 
   // Text already in the cell: hidden tooltip text, title / alt, mouse-over scripts.
   function textInCell(td) {
@@ -75,7 +84,7 @@
   const unread = new Map();  // tid -> name
   let checked = 0;
 
-  // Returns false if the page auto-refreshed while hovering (then it is checked again).
+  // Read the page; returns false if it auto-refreshed while hovering (then it is read again).
   async function scanPage() {
     found.clear(); unread.clear(); checked = 0;
     const table = findTable();
@@ -88,7 +97,6 @@
       const pid = (tid.match(/\((\d+)\)/) || [])[1] || '';
       const t0 = cells.indexOf(tidCell);
       const name = clean((cells[t0 - 1] || {}).innerText);
-      // DEV only: the header column (else the cell right after REMOTE ADDRESS)
       const iconCells = (cols.length ? cols : [t0 + 2]).map(i => cells[i])
         .filter(td => td && [...td.querySelectorAll('img')].some(isErrorIcon));
       checked++;
@@ -108,48 +116,50 @@
     return true;
   }
 
-  // ---------- check the page on screen only (again if an auto-refresh interrupts) ----------
+  // Tick one ATM like a person would: one click, wait until the website has recorded it
+  // (it may redraw the table), check it is still ticked, try again if not.
+  async function tick(tid) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const box = boxOf(rowOf(tid));
+      if (!box) return false;
+      if (!box.checked) {
+        box.click();
+        await sleep(TICK_WAIT_MS);
+      }
+      const after = boxOf(rowOf(tid));
+      if (after && after.checked) {
+        rowOf(tid).style.outline = '3px solid #ff9800';
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------- read the page on screen (again if an auto-refresh interrupts) ----------
   let complete = false;
   for (let attempt = 0; attempt < 3 && !complete; attempt++) {
     if (attempt) await sleep(1500);
     complete = await scanPage();
   }
 
-  // ---------- tick them ----------
-  const rowsByTid = () => {
-    const t = findTable();
-    const map = new Map();
-    for (const tr of (t ? dataRows(t) : [])) {
-      const tidCell = [...tr.cells].find(td => /^PRV\d+/i.test(clean(td.innerText)));
-      if (tidCell) map.set(clean(tidCell.innerText), tr);
-    }
-    return map;
-  };
-  let onScreen = rowsByTid();
-  for (const [tid] of found) {
-    const tr = onScreen.get(tid);
-    const box = tr && tr.cells[1] && tr.cells[1].querySelector('input[type=checkbox]');
-    if (box) {
-      if (!box.checked) box.click();
-      tr.style.outline = '3px solid #ff9800';
-    }
-  }
-  await sleep(1500);  // make sure the ticks stayed (no refresh / re-draw in between)
-  onScreen = rowsByTid();
+  // ---------- tick them, one at a time ----------
   const ticked = [], notTicked = [];
-  for (const [tid, name] of found) {
-    const tr = onScreen.get(tid);
-    const box = tr && tr.cells[1] && tr.cells[1].querySelector('input[type=checkbox]');
-    (box && box.checked ? ticked : notTicked).push(`${tid}  ${name}`);
+  for (const [tid, name] of found) ((await tick(tid)) ? ticked : notTicked).push(`${tid}  ${name}`);
+  await sleep(800);
+  // final check: still ticked after everything settled?
+  for (let i = ticked.length - 1; i >= 0; i--) {
+    const tid = ticked[i].split('  ')[0];
+    const box = boxOf(rowOf(tid));
+    if (!box || !box.checked) notTicked.push(ticked.splice(i, 1)[0]);
   }
 
   // ---------- report ----------
   let msg = found.size
     ? `"Dispenser down" on ${found.size} ATM(s).\n\n` +
       (ticked.length ? `TICKED (${ticked.length}):\n${ticked.join('\n')}\n\n` : '') +
-      (notTicked.length ? `NOT ticked - the page refreshed meanwhile (${notTicked.length}):\n${notTicked.join('\n')}\n` +
-        'Click the bookmark again.\n\n' : '') +
-      'Nothing was sent. Check the ticks, then use Group management and choose the command yourself.'
+      (notTicked.length ? `Could NOT tick (${notTicked.length}) - tick these yourself or click the bookmark again:\n` +
+        `${notTicked.join('\n')}\n\n` : '') +
+      'Nothing was sent. Open Group management: it should list the ticked ATMs. Check them, then choose the command yourself.'
     : 'No ATM on this page shows "Dispenser down" in the DEV column.';
   msg += `\n\nChecked ${checked} ATMs on this page only (click DEV first to have all device problems on one page).`;
   if (!complete) msg += '\nThe page kept refreshing while checking - click the bookmark again.';
