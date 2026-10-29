@@ -92,6 +92,8 @@ window with the copy selected. Drag the copy into the mail and click **Send** (a
 Settings on the **REPORT MAIL** sheet (made on first click): B3 To, B4 CC, B5 YES = also CC every branch mailed
 today with Mail Down ATMs, B6 subject, B7 message (`{DATE}` = e.g. 28th October 2026, `{FILE}`), B8 issues to
 leave out (separate with `;`). The daily report itself is not changed.
-Test helper: `DownReportMailPreview(reportPath)`.
+Outlook on the web ignores the `cc` of a compose link, so both mail buttons put the CC addresses on the
+clipboard (Windows API, not MSForms) for pasting into the Cc box; when the per-ATM mails have different CCs they
+open one at a time. Test helpers: `DownReportMailPreview(reportPath)`, `MailDryRun(True/False)` (log links instead of opening).
 
 Macros: `ImportWebDataAndRun1PMReport`, `ImportWebDataAndRun8PMReport`, `ImportWebDataOnly` (fills the two sheets without running the report).

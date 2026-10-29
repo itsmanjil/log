@@ -68,6 +68,23 @@ Private Const RM_LAST As Long = 9             ' when the mail was last opened
 Private Const COPY_FOLDER As String = "ATM DOWN REPORT MAIL"
 Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}"
 
+' Outlook on the web ignores the CC of a compose link, so CC addresses are put on the
+' clipboard to paste into the Cc box. Windows clipboard calls (32- and 64-bit Office):
+' MSForms.DataObject can put "??" on the clipboard while a File Explorer window is open.
+Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hwnd As LongPtr) As Long
+Private Declare PtrSafe Function EmptyClipboard Lib "user32" () As Long
+Private Declare PtrSafe Function CloseClipboard Lib "user32" () As Long
+Private Declare PtrSafe Function SetClipboardData Lib "user32" (ByVal wFormat As Long, ByVal hMem As LongPtr) As LongPtr
+Private Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
+Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+Private Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
+Private Declare PtrSafe Function GlobalFree Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal dest As LongPtr, ByVal src As LongPtr, ByVal bytes As LongPtr)
+
+' For checking without opening anything (MailDryRun): links are logged instead of opened.
+Private mDryRun As Boolean
+Private mDryRunLog As String
+
 Public Sub MailDownAtms()
     Dim wbReport As Workbook
     Dim mails As Collection
@@ -75,6 +92,7 @@ Public Sub MailDownAtms()
     Dim ready As Long, msg As String, notSent As String
     Dim wsMail As Worksheet
     Dim firstOk As Variant
+    Dim sameCc As Boolean, cc As String, n As Long, howTo As String
 
     If Not HasSheet(ThisWorkbook, EMAIL_SHEET) Then
         CreateEmailSheet
@@ -117,27 +135,87 @@ Public Sub MailDownAtms()
         Exit Sub
     End If
 
-    msg = "Open " & ready & " email(s) in Outlook for ATMs down " & HoursText() & " or more (" & wbReport.Name & "):" & msg
-    If Len(notSent) > 0 Then msg = msg & vbCrLf & vbCrLf & "Not mailed:" & notSent
+    ' How-to and settings first: a message box shows only about 1000 characters.
+    howTo = "Each mail opens in Chrome ready to send - check it and click Send."
+    sameCc = SameCcForAll(mails, cc)
+    If sameCc And Len(cc) > 0 Then
+        howTo = howTo & vbCrLf & "Outlook does not take the CC from the link, so the CC addresses are copied:" & vbCrLf & _
+                "in each mail click Cc (right end of the To line) and press Ctrl+V."
+    ElseIf Not sameCc Then
+        howTo = howTo & vbCrLf & "The mails have different CC addresses, so they open ONE AT A TIME:" & vbCrLf & _
+                "in each mail click Cc (right end of the To line), press Ctrl+V, Send," & vbCrLf & _
+                "then come back to Excel and click OK for the next mail."
+    End If
     ' show what the ATM EMAIL settings produce, so changes there are visible before sending
-    msg = msg & vbCrLf & vbCrLf & "First mail:" & vbCrLf & _
+    msg = "Open " & ready & " email(s) in Outlook for ATMs down " & HoursText() & " or more (" & wbReport.Name & ")." & _
+          vbCrLf & howTo & vbCrLf & vbCrLf & _
+          "First mail:" & vbCrLf & _
           "    To: " & firstOk(I_TO) & vbCrLf & _
-          "    CC: " & IIf(Len(firstOk(I_CC)) > 0, firstOk(I_CC), "(none - cell B4 on " & EMAIL_SHEET & ")") & vbCrLf & _
-          "    Subject: " & firstOk(I_SUBJECT)
-    msg = msg & vbCrLf & vbCrLf & "Each mail opens in Chrome ready to send - check it and click Send." & vbCrLf & _
-          "If Outlook leaves the CC box empty, add the CC address in Outlook before sending."
+          "    CC: " & IIf(Len(firstOk(I_CC)) > 0, CcForPaste(firstOk(I_CC)), "(none - cell B4 on " & EMAIL_SHEET & ")") & vbCrLf & _
+          "    Subject: " & firstOk(I_SUBJECT) & vbCrLf & vbCrLf & _
+          "ATMs:" & msg
+    If Len(notSent) > 0 Then msg = msg & vbCrLf & vbCrLf & "Not mailed:" & notSent
     If MsgBox(msg, vbQuestion + vbYesNo, "Mail Down ATMs") <> vbYes Then Exit Sub
 
     Set wsMail = ThisWorkbook.Worksheets(EMAIL_SHEET)
+    If sameCc And Len(cc) > 0 Then PutOnClipboard CcForPaste(cc)
     For Each m In mails
         If m(I_STATUS) = "OK" Then
-            CreateObject("Shell.Application").ShellExecute CStr(m(I_LINK))
+            n = n + 1
+            If Not sameCc Then
+                If n > 1 Then
+                    If MsgBox("Next mail (" & n & " of " & ready & "): " & m(I_TERMINAL) & "  " & m(I_BRANCH) & vbCrLf & _
+                              "CC: " & IIf(Len(m(I_CC)) > 0, CcForPaste(m(I_CC)) & "  (copied - click Cc, Ctrl+V)", "none for this one") & _
+                              vbCrLf & vbCrLf & "Click OK to open it, Cancel to stop.", vbOKCancel + vbInformation, "Mail Down ATMs") <> vbOK Then Exit For
+                End If
+                PutOnClipboard CcForPaste(m(I_CC))
+            End If
+            OpenLink CStr(m(I_LINK))
             wsMail.Cells(CLng(m(I_EMAILROW)), E_LAST).Value = Now
             wsMail.Cells(CLng(m(I_EMAILROW)), E_LAST).NumberFormat = "dd/mm/yyyy hh:mm"
-            Application.Wait Now + TimeSerial(0, 0, 1)
+            If sameCc Then Application.Wait Now + TimeSerial(0, 0, 1)
         End If
     Next m
 End Sub
+
+' True if every mail to open now has the same CC (returned in cc).
+Private Function SameCcForAll(ByVal mails As Collection, ByRef cc As String) As Boolean
+    Dim m As Variant, first As Boolean
+    first = True
+    SameCcForAll = True
+    cc = vbNullString
+    For Each m In mails
+        If m(I_STATUS) = "OK" Then
+            If first Then
+                cc = m(I_CC): first = False
+            ElseIf StrComp(m(I_CC), cc, vbTextCompare) <> 0 Then
+                SameCcForAll = False
+                Exit Function
+            End If
+        End If
+    Next m
+End Function
+
+' "a@x.com,b@y.com" -> "a@x.com; b@y.com" (Outlook splits a pasted list on ;)
+Private Function CcForPaste(ByVal cc As String) As String
+    CcForPaste = Replace(cc, ",", "; ")
+End Function
+
+Private Sub OpenLink(ByVal link As String)
+    If mDryRun Then
+        mDryRunLog = mDryRunLog & link & vbLf
+    Else
+        CreateObject("Shell.Application").ShellExecute link
+    End If
+End Sub
+
+' Test helper: MailDryRun(True) makes the mail buttons log their links instead of opening
+' them (no folder window either); MailDryRun(False) switches back. Returns the log so far.
+Public Function MailDryRun(ByVal enable As Boolean) As String
+    MailDryRun = mDryRunLog
+    mDryRun = enable
+    mDryRunLog = vbNullString
+End Function
 
 ' For checking without opening anything: one line per ATM,
 ' "terminal <tab> status <tab> to <tab> issue <tab> down for <tab> link".
@@ -593,6 +671,10 @@ Private Sub MailAllInOne(ByVal mails As Collection, ByVal wbReport As Workbook)
     If Len(noEmail) > 0 Then msg = msg & vbCrLf & vbCrLf & "Listed in the mail but no email address:" & noEmail
     If Len(skipped) > 0 Then msg = msg & vbCrLf & vbCrLf & "Left out (already mailed today):" & skipped
     msg = msg & vbCrLf & vbCrLf & "Check it and click Send - or close the Outlook window to keep it in Drafts and send it later."
+    If Len(cc) > 0 Then
+        msg = msg & vbCrLf & "Outlook does not take the CC from the link, so the CC addresses are copied:" & vbCrLf & _
+              "in the mail click Cc (right end of the To line) and press Ctrl+V."
+    End If
     If MsgBox(msg, vbQuestion + vbYesNo, "Mail Down ATMs") <> vbYes Then Exit Sub
 
     ' Very long links can be cut off: then open the mail without the text and put
@@ -601,10 +683,15 @@ Private Sub MailAllInOne(ByVal mails As Collection, ByVal wbReport As Workbook)
         pasted = PutOnClipboard(body)
         link = ComposeLink(Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_OWA, 2).Value)), toAddr, cc, subj, "")
     End If
-    CreateObject("Shell.Application").ShellExecute link
+    OpenLink link
     If pasted Then
-        MsgBox "The list is long, so it was copied instead: click in the mail text in Outlook and press Ctrl+V.", _
+        MsgBox "The list is long, so it was copied instead: click in the mail text in Outlook and press Ctrl+V." & _
+               IIf(Len(cc) > 0, vbCrLf & vbCrLf & "Then click OK here to copy the CC addresses.", ""), _
                vbInformation, "Mail Down ATMs"
+    End If
+    If Len(cc) > 0 Then
+        PutOnClipboard CcForPaste(cc)
+        If pasted Then MsgBox "CC addresses copied: in the mail click Cc and press Ctrl+V.", vbInformation, "Mail Down ATMs"
     End If
 
     Set wsMail = ThisWorkbook.Worksheets(EMAIL_SHEET)
@@ -616,13 +703,34 @@ Private Sub MailAllInOne(ByVal mails As Collection, ByVal wbReport As Workbook)
     Next m
 End Sub
 
+' Puts text on the Windows clipboard (empty text clears it).
 Private Function PutOnClipboard(ByVal s As String) As Boolean
-    On Error Resume Next
-    With CreateObject("new:{1C3B4210-F441-11CE-B9EA-00AA006B1A69}")  ' MSForms.DataObject
-        .SetText s
-        .PutInClipboard
-    End With
-    PutOnClipboard = (Err.Number = 0)
+    Const CF_UNICODETEXT As Long = 13
+    Const GHND As Long = &H42                    ' movable, zero-filled (ends with a null character)
+    Dim hMem As LongPtr, p As LongPtr, tries As Long
+
+    For tries = 1 To 5                           ' another program may hold the clipboard for a moment
+        If OpenClipboard(0) <> 0 Then Exit For
+        Application.Wait Now + TimeSerial(0, 0, 1)
+    Next tries
+    If tries > 5 Then Exit Function
+    EmptyClipboard
+    If Len(s) > 0 Then
+        hMem = GlobalAlloc(GHND, (Len(s) + 1) * 2)
+        If hMem <> 0 Then
+            p = GlobalLock(hMem)
+            If p <> 0 Then
+                CopyMemory p, StrPtr(s), Len(s) * 2
+                GlobalUnlock hMem
+                If SetClipboardData(CF_UNICODETEXT, hMem) <> 0 Then PutOnClipboard = True Else GlobalFree hMem
+            Else
+                GlobalFree hMem
+            End If
+        End If
+    Else
+        PutOnClipboard = True
+    End If
+    CloseClipboard
 End Function
 
 ' An ATM EMAIL sheet made by the first (dispenser-only) version has no Hours row
@@ -708,21 +816,29 @@ Public Sub MailDownReport()
     If Len(copyPath) = 0 Then Exit Sub
     link = BuildReportMail(wbReport.Name, toAddr, cc, subj, branches)
 
+    ' How-to first: a message box shows only about 1000 characters.
     msg = "Daily report mail for " & wbReport.Name & vbCrLf & vbCrLf & _
-          "Copy to attach: " & copyPath & vbCrLf & _
-          "    " & removed & " row(s) left out (" & LeaveOutText() & "), " & kept & " ATM row(s) in it." & vbCrLf & vbCrLf & _
-          "To: " & toAddr & vbCrLf & _
-          "CC: " & IIf(Len(cc) > 0, cc, "(none)") & vbCrLf & _
-          IIf(branches > 0, "    (includes " & branches & " branch address(es) mailed today)" & vbCrLf, "") & _
-          "Subject: " & subj & vbCrLf & vbCrLf & _
           "Click Yes: a folder window opens with the file selected, and the mail opens in Chrome." & vbCrLf & _
-          "Then drag " & wbReport.Name & " from the folder window into the mail, check it and click Send." & vbCrLf & _
-          "If Outlook leaves the CC box empty, add the CC addresses in Outlook before sending."
+          "1. Drag " & wbReport.Name & " from the folder window into the mail." & vbCrLf & _
+          IIf(Len(cc) > 0, "2. Outlook does not take the CC from the link, so the CC addresses are copied:" & vbCrLf & _
+                           "    in the mail click Cc (right end of the To line) and press Ctrl+V." & vbCrLf, "") & _
+          "Check it and click Send." & vbCrLf & vbCrLf & _
+          "Copy to attach: " & copyPath & vbCrLf & _
+          "    " & removed & " row(s) left out (" & LeaveOutText() & "), " & kept & " ATM row(s) in it." & vbCrLf & _
+          "Subject: " & subj & vbCrLf & _
+          "To: " & CcForPaste(toAddr) & vbCrLf & _
+          IIf(branches > 0, "CC (" & branches & " branch address(es) mailed today included): ", "CC: ") & _
+          IIf(Len(cc) > 0, CcForPaste(cc), "(none - cell B4 on " & REPORT_MAIL_SHEET & ")")
     If MsgBox(msg, vbQuestion + vbYesNo, "Mail Down Report") <> vbYes Then Exit Sub
 
-    Shell "explorer.exe /select,""" & copyPath & """", vbNormalFocus
-    Application.Wait Now + TimeSerial(0, 0, 1)
-    CreateObject("Shell.Application").ShellExecute link
+    If mDryRun Then
+        mDryRunLog = mDryRunLog & "folder: " & copyPath & vbLf
+    Else
+        Shell "explorer.exe /select,""" & copyPath & """", vbNormalFocus
+        Application.Wait Now + TimeSerial(0, 0, 1)
+    End If
+    OpenLink link
+    If Len(cc) > 0 Then PutOnClipboard CcForPaste(cc)
     wsSet.Cells(RM_LAST, 2).Value = Now
     wsSet.Cells(RM_LAST, 2).NumberFormat = "dd/mm/yyyy hh:mm"
 End Sub
