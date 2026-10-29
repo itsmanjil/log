@@ -42,7 +42,14 @@ Private Const COL_TIME As Long = 5
 Private Const COL_UP As Long = 6
 Private Const COL_ISSUE As Long = 7
 Private Const COL_VENDOR As Long = 10
+Private Const COL_INITIATED As Long = 12
 Private Const COL_REMARKS As Long = 13
+
+' CASH LOW sheet of the daily report
+Private Const CASH_SHEET As String = "CASH LOW"
+Private Const CL_TIME As Long = 5             ' CASH LOW ALERT TIME
+Private Const CL_INITIATED As Long = 8
+Private Const MAX_LISTED As Long = 10         ' rows listed in a message (message boxes cut off long text)
 
 ' ATM EMAIL columns
 Private Const E_TERMINAL As Long = 1
@@ -780,6 +787,7 @@ Public Sub MailDownReport()
     Dim wbReport As Workbook, wsSet As Worksheet
     Dim copyPath As String, link As String, msg As String, toAddr As String, cc As String, subj As String
     Dim removed As Long, kept As Long, branches As Long
+    Dim missing As String, firstEmpty As Range, nMissing As Long
 
     If Not HasSheet(ThisWorkbook, REPORT_MAIL_SHEET) Then
         CreateReportMailSheet
@@ -804,6 +812,25 @@ Public Sub MailDownReport()
 
     Set wbReport = FindDailyReport()
     If wbReport Is Nothing Then Exit Sub
+
+    ' no mail while a row has no time or no Initiated by
+    missing = MissingEntries(wbReport, firstEmpty, nMissing)
+    If nMissing > 0 Then
+        If MsgBox("Not mailed yet: every row needs its time and Initiated by." & vbCrLf & _
+                  "Fill these in " & wbReport.Name & ", save, and click Mail Down Report again." & vbCrLf & _
+                  "Click OK to go to the first empty cell." & vbCrLf & vbCrLf & _
+                  nMissing & " row(s):" & missing & _
+                  IIf(nMissing > MAX_LISTED, vbCrLf & "    ... and " & (nMissing - MAX_LISTED) & " more", ""), _
+                  vbExclamation + vbOKCancel, "Mail Down Report") = vbOK Then
+            On Error Resume Next
+            wbReport.Activate
+            firstEmpty.Worksheet.Activate
+            firstEmpty.Select
+            On Error GoTo 0
+        End If
+        Exit Sub
+    End If
+
     If Not wbReport.Saved And Not wbReport.ReadOnly Then
         Select Case MsgBox(wbReport.Name & " has changes that are not saved yet. Save it now?" & vbCrLf & _
                            "(The mailed copy contains what is on screen either way.)", vbQuestion + vbYesNoCancel, "Mail Down Report")
@@ -1014,22 +1041,18 @@ End Function
 ' Deletes the rows whose Issue in ATM contains a left-out text, then numbers S.N again
 ' (1 on the first row of each section, then =previous+1 as in the report).
 Private Sub RemoveLeftOutRows(ByVal ws As Worksheet, ByRef removed As Long, ByRef kept As Long)
-    Dim leaveOut() As String, part As Variant
-    Dim r As Long, lastRow As Long, issue As String
+    Dim leaveOut() As String
+    Dim r As Long, lastRow As Long
 
-    leaveOut = Split(UCase$(CleanList(CStr(ThisWorkbook.Worksheets(REPORT_MAIL_SHEET).Cells(RM_LEAVEOUT, 2).Value))), ";")
+    leaveOut = LeaveOutItems()
     removed = 0: kept = 0
     lastRow = ws.Cells(ws.Rows.Count, COL_TERMINAL).End(xlUp).Row
     For r = lastRow To 1 Step -1
         If UCase$(Trim$(CStr(ws.Cells(r, COL_TERMINAL).Value))) Like "PRV#*" Then
-            issue = UCase$(Trim$(CStr(ws.Cells(r, COL_ISSUE).Value)))
-            For Each part In leaveOut
-                If Len(part) > 0 And InStr(issue, part) > 0 Then
-                    ws.Rows(r).Delete
-                    removed = removed + 1
-                    Exit For
-                End If
-            Next part
+            If IsLeftOut(ws.Cells(r, COL_ISSUE).Value, leaveOut) Then
+                ws.Rows(r).Delete
+                removed = removed + 1
+            End If
         End If
     Next r
 
@@ -1045,6 +1068,84 @@ Private Sub RemoveLeftOutRows(ByVal ws As Worksheet, ByRef removed As Long, ByRe
         End If
     Next r
 End Sub
+
+' Issues left out of the mailed copy (REPORT MAIL B8), upper case.
+Private Function LeaveOutItems() As String()
+    LeaveOutItems = Split(UCase$(CleanList(CStr(ThisWorkbook.Worksheets(REPORT_MAIL_SHEET).Cells(RM_LEAVEOUT, 2).Value))), ";")
+End Function
+
+Private Function IsLeftOut(ByVal issue As Variant, ByRef leaveOut() As String) As Boolean
+    Dim part As Variant, s As String
+    If IsError(issue) Then Exit Function
+    s = UCase$(Trim$(CStr(issue)))
+    For Each part In leaveOut
+        If Len(part) > 0 And InStr(s, part) > 0 Then IsLeftOut = True: Exit Function
+    Next part
+End Function
+
+' Rows the report mail must not go out with: no time or no Initiated by, on ATM DOWN REPORT
+' (rows left out of the mailed copy are skipped) and CASH LOW. Returns the first MAX_LISTED
+' as lines; n = number of rows, firstEmpty = the first empty cell.
+Private Function MissingEntries(ByVal wb As Workbook, ByRef firstEmpty As Range, ByRef n As Long) As String
+    Dim ws As Worksheet, out As String
+    n = 0
+    Set firstEmpty = Nothing
+    Set ws = FindSheetTrim(wb, REPORT_SHEET)
+    If Not ws Is Nothing Then out = MissingInSheet(ws, COL_TIME, "Down time", COL_INITIATED, True, firstEmpty, n)
+    Set ws = FindSheetTrim(wb, CASH_SHEET)
+    If Not ws Is Nothing Then out = out & MissingInSheet(ws, CL_TIME, "Cash low alert time", CL_INITIATED, False, firstEmpty, n)
+    MissingEntries = out
+End Function
+
+Private Function MissingInSheet(ByVal ws As Worksheet, ByVal timeCol As Long, ByVal timeName As String, _
+                                ByVal initCol As Long, ByVal skipLeftOut As Boolean, _
+                                ByRef firstEmpty As Range, ByRef n As Long) As String
+    Dim leaveOut() As String
+    Dim r As Long, lastRow As Long, what As String, out As String
+
+    leaveOut = LeaveOutItems()
+    lastRow = ws.Cells(ws.Rows.Count, COL_TERMINAL).End(xlUp).Row
+    For r = 1 To lastRow
+        If UCase$(Trim$(CStr(ws.Cells(r, COL_TERMINAL).Value))) Like "PRV#*" Then
+            If Not (skipLeftOut And IsLeftOut(ws.Cells(r, COL_ISSUE).Value, leaveOut)) Then
+                what = vbNullString
+                If IsEmptyEntry(ws.Cells(r, timeCol).Value) Then
+                    what = timeName
+                    If firstEmpty Is Nothing Then Set firstEmpty = ws.Cells(r, timeCol)
+                End If
+                If IsEmptyEntry(ws.Cells(r, initCol).Value) Then
+                    what = what & IIf(Len(what) > 0, ", ", "") & "Initiated by"
+                    If firstEmpty Is Nothing Then Set firstEmpty = ws.Cells(r, initCol)
+                End If
+                If Len(what) > 0 Then
+                    n = n + 1
+                    If n <= MAX_LISTED Then
+                        out = out & vbCrLf & "    " & Trim$(ws.Name) & " row " & r & ": " & _
+                              Trim$(CStr(ws.Cells(r, COL_TERMINAL).Value)) & "  " & Trim$(CStr(ws.Cells(r, COL_BRANCH).Value)) & _
+                              " - no " & what
+                    End If
+                End If
+            End If
+        End If
+    Next r
+    MissingInSheet = out
+End Function
+
+' Empty, spaces only, or an Excel error such as #N/A.
+Private Function IsEmptyEntry(ByVal v As Variant) As Boolean
+    If IsError(v) Then IsEmptyEntry = True Else IsEmptyEntry = (Len(Trim$(CStr(v))) = 0)
+End Function
+
+' For checking without opening anything: "rows <tab> lines" of MissingEntries for a report file.
+Public Function ReportMailCheck(ByVal reportPath As String) As String
+    Dim wb As Workbook, opened As Boolean, firstEmpty As Range, n As Long, lines As String
+    CreateReportMailSheet
+    Set wb = OpenWorkbookByPath(reportPath, opened)
+    lines = MissingEntries(wb, firstEmpty, n)
+    If n > 0 Then lines = lines & vbCrLf & "    first empty cell: " & Trim$(firstEmpty.Worksheet.Name) & "!" & firstEmpty.Address(False, False)
+    If opened Then wb.Close SaveChanges:=False
+    ReportMailCheck = n & vbTab & lines
+End Function
 
 ' "a; b , c" -> "a;b;c" (items may contain spaces, e.g. NO TRANSACTION IN ATM)
 Private Function CleanList(ByVal s As String) As String
