@@ -16,6 +16,9 @@ Option Explicit
 '
 ' Branch email, phone, the Outlook web address and the mail text are kept on
 ' the "ATM EMAIL" sheet of this workbook (created on first use).
+'
+' MailDownReport (further down) opens the once-a-day "ATM DOWN TIME REPORT"
+' mail with today's report to attach; its settings are on the "REPORT MAIL" sheet.
 ' ======================================================================
 
 Private Const EMAIL_SHEET As String = "ATM EMAIL"
@@ -52,6 +55,18 @@ Private Const E_LAST As Long = 6
 ' Item fields
 Private Const I_TERMINAL = 0, I_BRANCH = 1, I_TO = 2, I_LINK = 3, I_EMAILROW = 4, I_STATUS = 5, _
               I_ISSUE = 6, I_DOWNFOR = 7, I_PHONE = 8, I_SUBJECT = 9, I_CC = 10, I_LINE = 11
+
+' Daily report mail (MailDownReport): REPORT MAIL sheet, settings in column B
+Private Const REPORT_MAIL_SHEET As String = "REPORT MAIL"
+Private Const RM_TO As Long = 3
+Private Const RM_CC As Long = 4
+Private Const RM_BRANCHES As Long = 5         ' YES = CC the branches mailed today
+Private Const RM_SUBJECT As Long = 6
+Private Const RM_BODY As Long = 7
+Private Const RM_LEAVEOUT As Long = 8         ' issues left out of the mailed copy
+Private Const RM_LAST As Long = 9             ' when the mail was last opened
+Private Const COPY_FOLDER As String = "ATM DOWN REPORT MAIL"
+Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 Public Sub MailDownAtms()
     Dim wbReport As Workbook
@@ -639,4 +654,342 @@ Private Sub UpgradeEmailSheet()
     If InStr(1, CStr(ws.Cells(ROW_SUBJECT, 2).Value), "Dispenser", vbTextCompare) > 0 Then ws.Cells(ROW_SUBJECT, 2).Value = DefaultSubject()
     If InStr(1, CStr(ws.Cells(ROW_BODY, 2).Value), "cash dispenser problem", vbTextCompare) > 0 Then ws.Cells(ROW_BODY, 2).Value = DefaultBody()
     WriteSettings ws, False
+End Sub
+
+' ======================================================================
+' DAILY "ATM DOWN TIME REPORT" MAIL (once a day, 1-2 PM)
+'
+' Makes a copy of today's daily report without the rows whose issue is
+' NO TRANSACTION IN ATM (Downloads\ATM DOWN REPORT MAIL\dd.mm.yyyy.xlsx),
+' opens a ready-filled mail in Outlook on the web (To / CC / subject /
+' message from the REPORT MAIL sheet, plus every branch mailed today with
+' Mail Down ATMs in CC) and shows the copy in a folder window. A web link
+' cannot attach a file, so you drag the copy into the mail, check it and
+' click Send. Nothing is sent automatically.
+' ======================================================================
+
+Public Sub MailDownReport()
+    Dim wbReport As Workbook, wsSet As Worksheet
+    Dim copyPath As String, link As String, msg As String, toAddr As String, cc As String, subj As String
+    Dim removed As Long, kept As Long, branches As Long
+
+    If Not HasSheet(ThisWorkbook, REPORT_MAIL_SHEET) Then
+        CreateReportMailSheet
+        MsgBox "A new sheet '" & REPORT_MAIL_SHEET & "' was added." & vbCrLf & vbCrLf & _
+               "Type the To and CC addresses of the daily report mail in B3 and B4 (separate several with ;), " & _
+               "then click Mail Down Report again.", vbInformation, "Mail Down Report"
+        ThisWorkbook.Worksheets(REPORT_MAIL_SHEET).Activate
+        Exit Sub
+    End If
+    Set wsSet = ThisWorkbook.Worksheets(REPORT_MAIL_SHEET)
+    If Len(CleanAddresses(CStr(wsSet.Cells(RM_TO, 2).Value))) = 0 Then
+        MsgBox "Type the To addresses in cell B3 on the '" & REPORT_MAIL_SHEET & "' sheet first.", vbExclamation, "Mail Down Report"
+        wsSet.Activate
+        Exit Sub
+    End If
+    If IsDate(wsSet.Cells(RM_LAST, 2).Value) Then
+        If Int(CDbl(CDate(wsSet.Cells(RM_LAST, 2).Value))) = CDbl(Date) Then
+            If MsgBox("The report mail was already opened today at " & Format$(wsSet.Cells(RM_LAST, 2).Value, "h:mm AM/PM") & _
+                      ". Open it again?", vbQuestion + vbYesNo, "Mail Down Report") <> vbYes Then Exit Sub
+        End If
+    End If
+
+    Set wbReport = FindDailyReport()
+    If wbReport Is Nothing Then Exit Sub
+    If Not wbReport.Saved And Not wbReport.ReadOnly Then
+        Select Case MsgBox(wbReport.Name & " has changes that are not saved yet. Save it now?" & vbCrLf & _
+                           "(The mailed copy contains what is on screen either way.)", vbQuestion + vbYesNoCancel, "Mail Down Report")
+            Case vbYes: wbReport.Save
+            Case vbCancel: Exit Sub
+        End Select
+    End If
+
+    copyPath = MakeReportMailCopy(wbReport, removed, kept)
+    If Len(copyPath) = 0 Then Exit Sub
+    link = BuildReportMail(wbReport.Name, toAddr, cc, subj, branches)
+
+    msg = "Daily report mail for " & wbReport.Name & vbCrLf & vbCrLf & _
+          "Copy to attach: " & copyPath & vbCrLf & _
+          "    " & removed & " row(s) left out (" & LeaveOutText() & "), " & kept & " ATM row(s) in it." & vbCrLf & vbCrLf & _
+          "To: " & toAddr & vbCrLf & _
+          "CC: " & IIf(Len(cc) > 0, cc, "(none)") & vbCrLf & _
+          IIf(branches > 0, "    (includes " & branches & " branch address(es) mailed today)" & vbCrLf, "") & _
+          "Subject: " & subj & vbCrLf & vbCrLf & _
+          "Click Yes: a folder window opens with the file selected, and the mail opens in Chrome." & vbCrLf & _
+          "Then drag " & wbReport.Name & " from the folder window into the mail, check it and click Send." & vbCrLf & _
+          "If Outlook leaves the CC box empty, add the CC addresses in Outlook before sending."
+    If MsgBox(msg, vbQuestion + vbYesNo, "Mail Down Report") <> vbYes Then Exit Sub
+
+    Shell "explorer.exe /select,""" & copyPath & """", vbNormalFocus
+    Application.Wait Now + TimeSerial(0, 0, 1)
+    CreateObject("Shell.Application").ShellExecute link
+    wsSet.Cells(RM_LAST, 2).Value = Now
+    wsSet.Cells(RM_LAST, 2).NumberFormat = "dd/mm/yyyy hh:mm"
+End Sub
+
+' For checking without opening anything:
+' "copy path <tab> rows left out <tab> rows kept <tab> branches in CC <tab> link".
+Public Function DownReportMailPreview(ByVal reportPath As String) As String
+    Dim wb As Workbook, opened As Boolean
+    Dim copyPath As String, link As String, removed As Long, kept As Long, branches As Long
+    Dim toAddr As String, cc As String, subj As String
+
+    CreateReportMailSheet
+    Set wb = OpenWorkbookByPath(reportPath, opened)
+    copyPath = MakeReportMailCopy(wb, removed, kept)
+    link = BuildReportMail(wb.Name, toAddr, cc, subj, branches)
+    If opened Then wb.Close SaveChanges:=False
+    DownReportMailPreview = copyPath & vbTab & removed & vbTab & kept & vbTab & branches & vbTab & link
+End Function
+
+' Compose link of the report mail; also returns To, CC (fixed CC + branches mailed
+' today, without the To addresses), subject and the number of branch addresses added.
+Private Function BuildReportMail(ByVal fileName As String, ByRef toAddr As String, ByRef cc As String, _
+                                 ByRef subj As String, ByRef branches As Long) As String
+    Dim wsSet As Worksheet, owa As String, a As Variant
+    Dim inTo As Object, ccList As Object, branchList As Object
+
+    Set wsSet = ThisWorkbook.Worksheets(REPORT_MAIL_SHEET)
+    Set inTo = CreateObject("Scripting.Dictionary"): inTo.CompareMode = 1
+    Set ccList = CreateObject("Scripting.Dictionary"): ccList.CompareMode = 1
+    toAddr = CleanAddresses(CStr(wsSet.Cells(RM_TO, 2).Value))
+    For Each a In Split(toAddr, ",")
+        If Len(a) > 0 Then inTo(a) = True
+    Next a
+    For Each a In Split(CleanAddresses(CStr(wsSet.Cells(RM_CC, 2).Value)), ",")
+        If Len(a) > 0 And Not inTo.Exists(a) Then ccList(a) = True
+    Next a
+    branches = 0
+    If UCase$(Trim$(CStr(wsSet.Cells(RM_BRANCHES, 2).Value))) <> "NO" Then
+        Set branchList = BranchesMailedToday()
+        For Each a In branchList.Keys
+            If Not inTo.Exists(a) And Not ccList.Exists(a) Then ccList(a) = True: branches = branches + 1
+        Next a
+    End If
+    cc = Join(ccList.Keys, ",")
+
+    subj = FillReportTemplate(CStr(wsSet.Cells(RM_SUBJECT, 2).Value), fileName)
+    owa = DEFAULT_OWA
+    If HasSheet(ThisWorkbook, EMAIL_SHEET) Then owa = Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_OWA, 2).Value))
+    BuildReportMail = ComposeLink(owa, toAddr, cc, subj, FillReportTemplate(CStr(wsSet.Cells(RM_BODY, 2).Value), fileName))
+End Function
+
+' Branch addresses (column C of ATM EMAIL) of every ATM mailed today with Mail Down ATMs.
+Private Function BranchesMailedToday() As Object
+    Dim ws As Worksheet, r As Long, lastRow As Long, a As Variant
+    Dim result As Object
+
+    Set result = CreateObject("Scripting.Dictionary"): result.CompareMode = 1
+    Set BranchesMailedToday = result
+    If Not HasSheet(ThisWorkbook, EMAIL_SHEET) Then Exit Function
+    Set ws = ThisWorkbook.Worksheets(EMAIL_SHEET)
+    lastRow = ws.Cells(ws.Rows.Count, E_TERMINAL).End(xlUp).Row
+    For r = FIRST_ROW To lastRow
+        If IsDate(ws.Cells(r, E_LAST).Value) Then
+            If Int(CDbl(CDate(ws.Cells(r, E_LAST).Value))) = CDbl(Date) Then
+                For Each a In Split(CleanAddresses(CStr(ws.Cells(r, E_TO).Value)), ",")
+                    If Len(a) > 0 Then result(a) = True
+                Next a
+            End If
+        End If
+    Next r
+End Function
+
+' {DATE} = date of the report file, e.g. "28th October 2026"; {FILE} = file name; {NL} = new line.
+Private Function FillReportTemplate(ByVal tpl As String, ByVal fileName As String) As String
+    Dim s As String
+    s = Replace(Replace(tpl, vbCrLf, vbLf), vbLf, vbCrLf)
+    s = Replace(s, "{NL}", vbCrLf, , , vbTextCompare)
+    s = Replace(s, "{DATE}", LongDateText(ReportDateOf(fileName)), , , vbTextCompare)
+    s = Replace(s, "{FILE}", fileName, , , vbTextCompare)
+    FillReportTemplate = s
+End Function
+
+' "28.10.2026.xlsx" -> 28/10/2026 (today if the name is not a date)
+Private Function ReportDateOf(ByVal fileName As String) As Date
+    Dim parts() As String
+    ReportDateOf = Date
+    If InStrRev(fileName, ".") > 0 Then fileName = Left$(fileName, InStrRev(fileName, ".") - 1)
+    parts = Split(fileName, ".")
+    If UBound(parts) <> 2 Then Exit Function
+    If Not (IsNumeric(parts(0)) And IsNumeric(parts(1)) And IsNumeric(parts(2))) Then Exit Function
+    On Error Resume Next
+    ReportDateOf = DateSerial(CInt(parts(2)), CInt(parts(1)), CInt(parts(0)))
+End Function
+
+' 28/10/2026 -> "28th October 2026" (English month names whatever the PC's language)
+Private Function LongDateText(ByVal d As Date) As String
+    Dim suffix As String
+    Select Case Day(d)
+        Case 1, 21, 31: suffix = "st"
+        Case 2, 22: suffix = "nd"
+        Case 3, 23: suffix = "rd"
+        Case Else: suffix = "th"
+    End Select
+    LongDateText = Day(d) & suffix & " " & _
+        Split("January February March April May June July August September October November December")(Month(d) - 1) & _
+        " " & Year(d)
+End Function
+
+Private Function LeaveOutText() As String
+    LeaveOutText = Trim$(CStr(ThisWorkbook.Worksheets(REPORT_MAIL_SHEET).Cells(RM_LEAVEOUT, 2).Value))
+    If Len(LeaveOutText) = 0 Then LeaveOutText = "nothing left out"
+End Function
+
+' Saves a copy of the report (as it is on screen) to Downloads\ATM DOWN REPORT MAIL under
+' the same file name and removes the left-out rows from its ATM DOWN REPORT sheet.
+' Older copies in that folder are deleted. Returns the path, or "" after telling why not.
+Private Function MakeReportMailCopy(ByVal wbReport As Workbook, ByRef removed As Long, ByRef kept As Long) As String
+    Dim folder As String, finalPath As String, workPath As String, f As String
+    Dim old As New Collection, oldFile As Variant
+    Dim wb As Workbook, ws As Worksheet
+    Dim screenWas As Boolean, alertsWas As Boolean
+
+    folder = DownloadsDir()
+    If Len(folder) = 0 Then MsgBox "The Downloads folder was not found.", vbExclamation, "Mail Down Report": Exit Function
+    folder = folder & "\" & COPY_FOLDER
+    If Len(Dir$(folder, vbDirectory)) = 0 Then MkDir folder
+    finalPath = folder & "\" & wbReport.Name
+    workPath = folder & "\making copy - " & wbReport.Name   ' Excel cannot open two files with the same name
+
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, finalPath, vbTextCompare) = 0 Or StrComp(wb.FullName, workPath, vbTextCompare) = 0 Then
+            wb.Close SaveChanges:=False
+            Exit For
+        End If
+    Next wb
+    f = Dir$(folder & "\*.xls*")
+    Do While Len(f) > 0
+        old.Add folder & "\" & f
+        f = Dir$()
+    Loop
+    On Error Resume Next
+    For Each oldFile In old
+        Kill CStr(oldFile)
+    Next oldFile
+    On Error GoTo 0
+    If Len(Dir$(finalPath)) > 0 Then
+        MsgBox "Close " & finalPath & " (it is open somewhere) and click Mail Down Report again.", vbExclamation, "Mail Down Report"
+        Exit Function
+    End If
+
+    screenWas = Application.ScreenUpdating: alertsWas = Application.DisplayAlerts
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Set wb = Nothing
+    On Error GoTo Failed
+    wbReport.SaveCopyAs workPath
+    Set wb = Workbooks.Open(workPath, UpdateLinks:=False)
+    Set ws = FindSheetTrim(wb, REPORT_SHEET)
+    If Not ws Is Nothing Then RemoveLeftOutRows ws, removed, kept
+    wb.Close SaveChanges:=True
+    Set wb = Nothing
+    Name workPath As finalPath
+    MakeReportMailCopy = finalPath
+Failed:
+    If Err.Number <> 0 Then
+        MsgBox "Could not make the copy to attach: " & Err.Description, vbExclamation, "Mail Down Report"
+        If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    End If
+    Application.DisplayAlerts = alertsWas
+    Application.ScreenUpdating = screenWas
+End Function
+
+' Deletes the rows whose Issue in ATM contains a left-out text, then numbers S.N again
+' (1 on the first row of each section, then =previous+1 as in the report).
+Private Sub RemoveLeftOutRows(ByVal ws As Worksheet, ByRef removed As Long, ByRef kept As Long)
+    Dim leaveOut() As String, part As Variant
+    Dim r As Long, lastRow As Long, issue As String
+
+    leaveOut = Split(UCase$(CleanList(CStr(ThisWorkbook.Worksheets(REPORT_MAIL_SHEET).Cells(RM_LEAVEOUT, 2).Value))), ";")
+    removed = 0: kept = 0
+    lastRow = ws.Cells(ws.Rows.Count, COL_TERMINAL).End(xlUp).Row
+    For r = lastRow To 1 Step -1
+        If UCase$(Trim$(CStr(ws.Cells(r, COL_TERMINAL).Value))) Like "PRV#*" Then
+            issue = UCase$(Trim$(CStr(ws.Cells(r, COL_ISSUE).Value)))
+            For Each part In leaveOut
+                If Len(part) > 0 And InStr(issue, part) > 0 Then
+                    ws.Rows(r).Delete
+                    removed = removed + 1
+                    Exit For
+                End If
+            Next part
+        End If
+    Next r
+
+    lastRow = ws.Cells(ws.Rows.Count, COL_TERMINAL).End(xlUp).Row
+    For r = 1 To lastRow
+        If UCase$(Trim$(CStr(ws.Cells(r, COL_TERMINAL).Value))) Like "PRV#*" Then
+            kept = kept + 1
+            If r > 1 And UCase$(Trim$(CStr(ws.Cells(r - 1, COL_TERMINAL).Value))) Like "PRV#*" Then
+                ws.Cells(r, 1).Formula = "=A" & (r - 1) & "+1"
+            Else
+                ws.Cells(r, 1).Value = 1
+            End If
+        End If
+    Next r
+End Sub
+
+' "a; b , c" -> "a;b;c" (items may contain spaces, e.g. NO TRANSACTION IN ATM)
+Private Function CleanList(ByVal s As String) As String
+    Dim part As Variant, out As String
+    For Each part In Split(Replace(Replace(Replace(s, ",", ";"), vbCr, ";"), vbLf, ";"), ";")
+        If Len(Trim$(part)) > 0 Then out = out & ";" & Trim$(part)
+    Next part
+    If Len(out) > 0 Then CleanList = Mid$(out, 2)
+End Function
+
+Private Function DownloadsDir() As String
+    On Error Resume Next
+    With CreateObject("WScript.Shell")
+        DownloadsDir = .ExpandEnvironmentStrings(.RegRead( _
+            "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders\" & DOWNLOADS_GUID))
+    End With
+    On Error GoTo 0
+    If Len(DownloadsDir) = 0 Then DownloadsDir = Environ$("USERPROFILE") & "\Downloads"
+    If Right$(DownloadsDir, 1) = "\" Then DownloadsDir = Left$(DownloadsDir, Len(DownloadsDir) - 1)
+    If Len(Dir$(DownloadsDir, vbDirectory)) = 0 Then DownloadsDir = vbNullString
+End Function
+
+' Settings of the daily report mail (addresses are typed in by you).
+Public Sub CreateReportMailSheet()
+    Dim ws As Worksheet
+
+    If HasSheet(ThisWorkbook, REPORT_MAIL_SHEET) Then Exit Sub
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    ws.Name = REPORT_MAIL_SHEET
+    ws.Range("A1").Value = "DAILY ATM DOWN TIME REPORT MAIL - used by Mail Down Report"
+    ws.Range("A1").Font.Bold = True
+    ws.Range("A1").Font.Size = 13
+
+    ws.Cells(RM_TO, 1).Value = "To"
+    ws.Cells(RM_TO, 3).Value = "Addresses, separate several with ;"
+    ws.Cells(RM_CC, 1).Value = "CC"
+    ws.Cells(RM_CC, 3).Value = "Always copied, separate several with ;"
+    ws.Cells(RM_BRANCHES, 1).Value = "CC branches mailed today"
+    ws.Cells(RM_BRANCHES, 2).Value = "YES"
+    ws.Cells(RM_BRANCHES, 3).Value = "YES = also CC every branch mailed today with Mail Down ATMs (email in column C of ATM EMAIL)"
+    ws.Cells(RM_SUBJECT, 1).Value = "Subject"
+    ws.Cells(RM_SUBJECT, 2).Value = "ATM DOWN TIME REPORT"
+    ws.Cells(RM_SUBJECT, 3).Value = "Placeholders: {DATE} (e.g. 28th October 2026) {FILE} (e.g. 28.10.2026.xlsx)"
+    ws.Cells(RM_BODY, 1).Value = "Message"
+    ws.Cells(RM_BODY, 2).Value = "Dear Sir/Madam," & vbLf & _
+        "Please find the attached ATM downtime report date {DATE} here with this formal mail."
+    ws.Cells(RM_BODY, 3).Value = "Same placeholders. Alt+Enter = new line. Outlook adds your signature if it is set to add it to new mails."
+    ws.Cells(RM_LEAVEOUT, 1).Value = "Leave out issues"
+    ws.Cells(RM_LEAVEOUT, 2).Value = "NO TRANSACTION IN ATM"
+    ws.Cells(RM_LEAVEOUT, 3).Value = "Rows whose 'Issue in ATM' contains this are removed from the mailed copy. Several: separate with ;"
+    ws.Cells(RM_LAST, 1).Value = "Last opened"
+    ws.Cells(RM_LAST, 3).Value = "Filled in by the macro"
+
+    ws.Range(ws.Cells(RM_TO, 1), ws.Cells(RM_LAST, 1)).Font.Bold = True
+    ws.Range(ws.Cells(RM_TO, 3), ws.Cells(RM_LAST, 3)).Font.Italic = True
+    ws.Range(ws.Cells(RM_TO, 3), ws.Cells(RM_LAST, 3)).Font.Color = RGB(89, 89, 89)
+    ws.Range(ws.Cells(RM_TO, 2), ws.Cells(RM_LEAVEOUT, 2)).Interior.Color = RGB(255, 242, 204)
+    ws.Range(ws.Cells(RM_TO, 2), ws.Cells(RM_BODY, 2)).WrapText = True
+    ws.Rows(RM_BODY).RowHeight = 48
+    ws.Columns(1).ColumnWidth = 26
+    ws.Columns(2).ColumnWidth = 80
+    ws.Columns(3).ColumnWidth = 60
+    ws.Range("A:C").VerticalAlignment = xlTop
 End Sub

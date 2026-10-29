@@ -83,4 +83,15 @@ First click creates the **ATM EMAIL** sheet (every TOTAL terminal). Fill in once
 An ATM is mailed once per day (column F records when); clear that cell to mail it again. ATMs without an email
 address are listed (with their phone) and skipped. A sheet made by the earlier dispenser-only version is
 upgraded automatically, keeping the addresses already typed in.
+## Daily ATM DOWN TIME REPORT mail
+
+The same module adds **Mail Down Report (1-2 PM)** (macro `MailDownReport`) next to Mail Down ATMs. It saves a copy
+of today's open daily report to `Downloads\ATM DOWN REPORT MAIL\dd.mm.yyyy.xlsx` without the rows whose issue
+contains `NO TRANSACTION IN ATM` (S.N numbered again), opens a ready-filled Outlook on the web mail and a folder
+window with the copy selected. Drag the copy into the mail and click **Send** (a compose link cannot attach files).
+Settings on the **REPORT MAIL** sheet (made on first click): B3 To, B4 CC, B5 YES = also CC every branch mailed
+today with Mail Down ATMs, B6 subject, B7 message (`{DATE}` = e.g. 28th October 2026, `{FILE}`), B8 issues to
+leave out (separate with `;`). The daily report itself is not changed.
+Test helper: `DownReportMailPreview(reportPath)`.
+
 Macros: `ImportWebDataAndRun1PMReport`, `ImportWebDataAndRun8PMReport`, `ImportWebDataOnly` (fills the two sheets without running the report).
