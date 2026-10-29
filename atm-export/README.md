@@ -98,4 +98,12 @@ Outlook on the web ignores the `cc` of a compose link, so both mail buttons put 
 clipboard (Windows API, not MSForms) for pasting into the Cc box; when the per-ATM mails have different CCs they
 open one at a time. Test helpers: `DownReportMailPreview(reportPath)`, `MailDryRun(True/False)` (log links instead of opening).
 
+## USB ENABLE mail
+
+**Mail USB Enable** (macro `MailUsbEnable`, same module) asks for a terminal ID (suggests the selected row's ATM),
+takes the branch and the IP address from column G "IP address" of ATM EMAIL and opens a ready-filled Outlook on the
+web mail. If column G is empty it suggests the ATM's REMOTE ADDRESS from Raw Switch Data; the address you confirm is
+saved in column G. To / CC / subject / message (`{BRANCH}` `{TERMINAL}` `{IP}`) are on the **USB MAIL** sheet.
+CC is copied for pasting, as for the other mails. Test helper: `UsbMailPreview(terminal)`.
+
 Macros: `ImportWebDataAndRun1PMReport`, `ImportWebDataAndRun8PMReport`, `ImportWebDataOnly` (fills the two sheets without running the report).

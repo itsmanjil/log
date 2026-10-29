@@ -72,6 +72,13 @@ Private Const RM_SUBJECT As Long = 6
 Private Const RM_BODY As Long = 7
 Private Const RM_LEAVEOUT As Long = 8         ' issues left out of the mailed copy
 Private Const RM_LAST As Long = 9             ' when the mail was last opened
+' USB ENABLE mail (MailUsbEnable): USB MAIL sheet, settings in column B; IP addresses on ATM EMAIL
+Private Const USB_SHEET As String = "USB MAIL"
+Private Const U_TO As Long = 3
+Private Const U_CC As Long = 4
+Private Const U_SUBJECT As Long = 5
+Private Const U_BODY As Long = 6
+Private Const E_IP As Long = 7                ' ATM EMAIL column G
 Private Const COPY_FOLDER As String = "ATM DOWN REPORT MAIL"
 Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}"
 
@@ -557,6 +564,7 @@ Public Sub CreateEmailSheet()
     ws.Columns(5).ColumnWidth = 22
     ws.Columns(6).ColumnWidth = 17
     ws.Range("A:F").VerticalAlignment = xlTop
+    AddIpColumn ws
     On Error Resume Next  ' freezing needs a visible window
     ws.Activate
     ws.Range("A" & FIRST_ROW).Select
@@ -754,6 +762,7 @@ Private Sub UpgradeEmailSheet()
         End If
         ' sheets made before the one-mail option: add its settings (rows 8-10)
         If Len(Trim$(CStr(ws.Cells(ROW_ONEMAIL, 1).Value))) = 0 Then WriteSettings ws, False
+        AddIpColumn ws
         Exit Sub
     End If
     If StrComp(Trim$(CStr(ws.Cells(10, 1).Value)), "Terminal", vbTextCompare) <> 0 Then Exit Sub
@@ -769,6 +778,26 @@ Private Sub UpgradeEmailSheet()
     If InStr(1, CStr(ws.Cells(ROW_SUBJECT, 2).Value), "Dispenser", vbTextCompare) > 0 Then ws.Cells(ROW_SUBJECT, 2).Value = DefaultSubject()
     If InStr(1, CStr(ws.Cells(ROW_BODY, 2).Value), "cash dispenser problem", vbTextCompare) > 0 Then ws.Cells(ROW_BODY, 2).Value = DefaultBody()
     WriteSettings ws, False
+    AddIpColumn ws
+End Sub
+
+' Column G "IP address" (used by Mail USB Enable), added to sheets made before it.
+Private Sub AddIpColumn(ByVal ws As Worksheet)
+    Dim lastRow As Long
+    If Len(Trim$(CStr(ws.Cells(FIRST_ROW - 1, E_IP).Value))) > 0 Then Exit Sub
+    ws.Cells(FIRST_ROW - 1, E_IP).Value = "IP address"
+    With ws.Cells(FIRST_ROW - 1, E_IP)
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(31, 78, 120)
+    End With
+    lastRow = ws.Cells(ws.Rows.Count, E_TERMINAL).End(xlUp).Row
+    If lastRow >= FIRST_ROW Then
+        ws.Range(ws.Cells(FIRST_ROW, E_IP), ws.Cells(lastRow, E_IP)).Interior.Color = RGB(255, 242, 204)
+        ws.Range(ws.Cells(FIRST_ROW, E_IP), ws.Cells(lastRow, E_IP)).NumberFormat = "@"
+    End If
+    ws.Columns(E_IP).ColumnWidth = 18
+    ws.Columns(E_IP).VerticalAlignment = xlTop
 End Sub
 
 ' ======================================================================
@@ -1208,5 +1237,221 @@ Public Sub CreateReportMailSheet()
     ws.Columns(1).ColumnWidth = 26
     ws.Columns(2).ColumnWidth = 80
     ws.Columns(3).ColumnWidth = 60
+    ws.Range("A:C").VerticalAlignment = xlTop
+End Sub
+
+' ======================================================================
+' "USB ENABLE" MAIL (MailUsbEnable)
+'
+' Asks for the terminal ID (suggests the ATM of the selected row), takes the
+' branch and IP address from the ATM EMAIL sheet (column G) and opens a
+' ready-filled Outlook on the web mail. With no IP stored yet it suggests the
+' REMOTE ADDRESS of that ATM from Raw Switch Data; what you confirm is saved
+' in column G. To / CC / subject / message are on the USB MAIL sheet.
+' Nothing is sent automatically.
+' ======================================================================
+
+Public Sub MailUsbEnable()
+    Dim wsSet As Worksheet, wsMail As Worksheet
+    Dim t As String, branch As String, ip As String, suggested As String, prompt As String
+    Dim toAddr As String, cc As String, subj As String, link As String, msg As String
+    Dim r As Long
+
+    If Not HasSheet(ThisWorkbook, USB_SHEET) Then
+        CreateUsbMailSheet
+        MsgBox "A new sheet '" & USB_SHEET & "' was added." & vbCrLf & vbCrLf & _
+               "Type the To and CC addresses of the USB ENABLE mail in B3 and B4 (separate several with ;), " & _
+               "then click Mail USB Enable again.", vbInformation, "Mail USB Enable"
+        ThisWorkbook.Worksheets(USB_SHEET).Activate
+        Exit Sub
+    End If
+    Set wsSet = ThisWorkbook.Worksheets(USB_SHEET)
+    toAddr = CleanAddresses(CStr(wsSet.Cells(U_TO, 2).Value))
+    If Len(toAddr) = 0 Then
+        MsgBox "Type the To addresses in cell B3 on the '" & USB_SHEET & "' sheet first.", vbExclamation, "Mail USB Enable"
+        wsSet.Activate
+        Exit Sub
+    End If
+    If Not HasSheet(ThisWorkbook, EMAIL_SHEET) Then CreateEmailSheet
+    UpgradeEmailSheet
+    Set wsMail = ThisWorkbook.Worksheets(EMAIL_SHEET)
+
+    t = UCase$(Trim$(InputBox("Terminal ID of the ATM (e.g. PRV20701):", "Mail USB Enable", SelectedTerminal())))
+    If Len(t) = 0 Then Exit Sub
+    r = EmailRowOf(t)
+    If r = 0 Then
+        MsgBox t & " is not on the '" & EMAIL_SHEET & "' sheet. Check the terminal ID.", vbExclamation, "Mail USB Enable"
+        Exit Sub
+    End If
+    branch = Trim$(CStr(wsMail.Cells(r, E_BRANCH).Value))
+
+    ip = Trim$(CStr(wsMail.Cells(r, E_IP).Value))
+    If Len(ip) = 0 Then
+        suggested = SwitchIpOf(t)
+        prompt = "IP address of " & t & "  " & branch & ":"
+        If Len(suggested) > 0 Then prompt = prompt & vbCrLf & vbCrLf & _
+            "Filled in from the REMOTE ADDRESS column of Raw Switch Data - check it is the ATM's IP."
+        prompt = prompt & vbCrLf & vbCrLf & "It is saved in column G of " & EMAIL_SHEET & " for next time."
+        ip = Trim$(InputBox(prompt, "Mail USB Enable", suggested))
+        If Len(ip) = 0 Then Exit Sub
+        If Not IsIpAddress(ip) Then
+            MsgBox "'" & ip & "' is not an IP address (like 10.20.30.40).", vbExclamation, "Mail USB Enable"
+            Exit Sub
+        End If
+        wsMail.Cells(r, E_IP).NumberFormat = "@"
+        wsMail.Cells(r, E_IP).Value = ip
+    End If
+
+    link = BuildUsbMail(t, branch, ip, toAddr, cc, subj)
+    msg = "Open the USB ENABLE mail for " & t & "  " & branch & "?" & vbCrLf & vbCrLf & _
+          "It opens in Chrome ready to send - check it and click Send." & vbCrLf & _
+          IIf(Len(cc) > 0, "Outlook does not take the CC from the link, so the CC addresses are copied:" & vbCrLf & _
+                           "in the mail click Cc (right end of the To line) and press Ctrl+V." & vbCrLf, "") & vbCrLf & _
+          "IP address: " & ip & "   (column G of " & EMAIL_SHEET & ")" & vbCrLf & _
+          "Subject: " & subj & vbCrLf & _
+          "To: " & CcForPaste(toAddr) & vbCrLf & _
+          "CC: " & IIf(Len(cc) > 0, CcForPaste(cc), "(none - cell B4 on " & USB_SHEET & ")")
+    If MsgBox(msg, vbQuestion + vbYesNo, "Mail USB Enable") <> vbYes Then Exit Sub
+    OpenLink link
+    If Len(cc) > 0 Then PutOnClipboard CcForPaste(cc)
+End Sub
+
+' For checking without opening anything: "IP <tab> link" for a terminal (IP from column G
+' of ATM EMAIL, else the Raw Switch Data suggestion; nothing is saved).
+Public Function UsbMailPreview(ByVal terminal As String) As String
+    Dim r As Long, ip As String, branch As String, toAddr As String, cc As String, subj As String
+    CreateUsbMailSheet
+    terminal = UCase$(Trim$(terminal))
+    r = EmailRowOf(terminal)
+    If r = 0 Then Exit Function
+    branch = Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(r, E_BRANCH).Value))
+    ip = Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(r, E_IP).Value))
+    If Len(ip) = 0 Then ip = SwitchIpOf(terminal)
+    UsbMailPreview = ip & vbTab & BuildUsbMail(terminal, branch, ip, toAddr, cc, subj)
+End Function
+
+Private Function BuildUsbMail(ByVal t As String, ByVal branch As String, ByVal ip As String, _
+                              ByRef toAddr As String, ByRef cc As String, ByRef subj As String) As String
+    Dim wsSet As Worksheet, owa As String
+    Set wsSet = ThisWorkbook.Worksheets(USB_SHEET)
+    toAddr = CleanAddresses(CStr(wsSet.Cells(U_TO, 2).Value))
+    cc = CleanAddresses(CStr(wsSet.Cells(U_CC, 2).Value))
+    subj = FillUsbTemplate(CStr(wsSet.Cells(U_SUBJECT, 2).Value), t, branch, ip)
+    owa = DEFAULT_OWA
+    If HasSheet(ThisWorkbook, EMAIL_SHEET) Then owa = Trim$(CStr(ThisWorkbook.Worksheets(EMAIL_SHEET).Cells(ROW_OWA, 2).Value))
+    BuildUsbMail = ComposeLink(owa, toAddr, cc, subj, FillUsbTemplate(CStr(wsSet.Cells(U_BODY, 2).Value), t, branch, ip))
+End Function
+
+' {TERMINAL} {BRANCH} {IP} {NL}
+Private Function FillUsbTemplate(ByVal tpl As String, ByVal t As String, ByVal branch As String, ByVal ip As String) As String
+    Dim s As String
+    s = Replace(Replace(tpl, vbCrLf, vbLf), vbLf, vbCrLf)
+    s = Replace(s, "{NL}", vbCrLf, , , vbTextCompare)
+    s = Replace(s, "{TERMINAL}", t, , , vbTextCompare)
+    s = Replace(s, "{BRANCH}", branch, , , vbTextCompare)
+    s = Replace(s, "{IP}", ip, , , vbTextCompare)
+    FillUsbTemplate = s
+End Function
+
+' Row of a terminal on ATM EMAIL, 0 if it is not there.
+Private Function EmailRowOf(ByVal t As String) As Long
+    Dim ws As Worksheet, r As Long, lastRow As Long
+    If Not HasSheet(ThisWorkbook, EMAIL_SHEET) Then Exit Function
+    Set ws = ThisWorkbook.Worksheets(EMAIL_SHEET)
+    lastRow = ws.Cells(ws.Rows.Count, E_TERMINAL).End(xlUp).Row
+    For r = FIRST_ROW To lastRow
+        If StrComp(Trim$(CStr(ws.Cells(r, E_TERMINAL).Value)), t, vbTextCompare) = 0 Then EmailRowOf = r: Exit Function
+    Next r
+End Function
+
+' Terminal of the selected row (any of columns A-D, e.g. ATM EMAIL or a report), else "".
+Private Function SelectedTerminal() As String
+    Dim c As Long, v As String
+    On Error Resume Next
+    For c = 1 To 4
+        v = UCase$(Trim$(CStr(ActiveCell.EntireRow.Cells(1, c).Value)))
+        If v Like "PRV#*" Then
+            If InStr(v, " ") > 0 Then v = Left$(v, InStr(v, " ") - 1)
+            SelectedTerminal = v
+            Exit Function
+        End If
+    Next c
+End Function
+
+' REMOTE ADDRESS of a terminal in Raw Switch Data (the website export), "" if not found.
+Private Function SwitchIpOf(ByVal t As String) As String
+    Dim ws As Worksheet, r As Long, c As Long, hdr As Long, tidCol As Long, ipCol As Long, lastRow As Long
+    Dim v As String
+    If Not HasSheet(ThisWorkbook, "Raw Switch Data") Then Exit Function
+    Set ws = ThisWorkbook.Worksheets("Raw Switch Data")
+    For hdr = 1 To 10
+        tidCol = 0: ipCol = 0
+        For c = 1 To 30
+            v = UCase$(Trim$(CStr(ws.Cells(hdr, c).Value)))
+            If v = "TID (PID)" Then tidCol = c
+            If v = "REMOTE ADDRESS" Then ipCol = c
+        Next c
+        If tidCol > 0 And ipCol > 0 Then Exit For
+    Next hdr
+    If tidCol = 0 Or ipCol = 0 Then Exit Function
+    lastRow = ws.Cells(ws.Rows.Count, tidCol).End(xlUp).Row
+    For r = hdr + 1 To lastRow
+        v = UCase$(Trim$(CStr(ws.Cells(r, tidCol).Value)))
+        If InStr(v, "(") > 0 Then v = Left$(v, InStr(v, "(") - 1)
+        v = Trim$(v)
+        If v = t Then
+            v = Trim$(CStr(ws.Cells(r, ipCol).Value))
+            If IsIpAddress(v) Then SwitchIpOf = v
+            Exit Function
+        End If
+    Next r
+End Function
+
+Private Function IsIpAddress(ByVal s As String) As Boolean
+    Dim parts() As String, i As Long
+    parts = Split(Trim$(s), ".")
+    If UBound(parts) <> 3 Then Exit Function
+    For i = 0 To 3
+        If Len(parts(i)) = 0 Or Len(parts(i)) > 3 Then Exit Function
+        If Not parts(i) Like String$(Len(parts(i)), "#") Then Exit Function
+        If CLng(parts(i)) > 255 Then Exit Function
+    Next i
+    IsIpAddress = True
+End Function
+
+' Settings of the USB ENABLE mail (addresses are typed in by you).
+Public Sub CreateUsbMailSheet()
+    Dim ws As Worksheet
+
+    If HasSheet(ThisWorkbook, USB_SHEET) Then Exit Sub
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    ws.Name = USB_SHEET
+    ws.Range("A1").Value = "USB ENABLE MAIL - used by Mail USB Enable (IP addresses: column G of " & EMAIL_SHEET & ")"
+    ws.Range("A1").Font.Bold = True
+    ws.Range("A1").Font.Size = 13
+
+    ws.Cells(U_TO, 1).Value = "To"
+    ws.Cells(U_TO, 3).Value = "Addresses, separate several with ;"
+    ws.Cells(U_CC, 1).Value = "CC"
+    ws.Cells(U_CC, 3).Value = "Separate several with ; (copied for you to paste into the Cc box)"
+    ws.Cells(U_SUBJECT, 1).Value = "Subject"
+    ws.Cells(U_SUBJECT, 2).Value = "USB ENABLE"
+    ws.Cells(U_SUBJECT, 3).Value = "Placeholders: {TERMINAL} {BRANCH} {IP}"
+    ws.Cells(U_BODY, 1).Value = "Message"
+    ws.Cells(U_BODY, 2).Value = "Dear Sir/Madam," & vbLf & vbLf & _
+        "Please enable USB access for the ATM at {BRANCH} ({TERMINAL}) with the following IP address:" & vbLf & vbLf & _
+        "IP Address: {IP}" & vbLf & vbLf & _
+        "Note for Branch: If USB access is not enabled, kindly contact the Cyber Cell Department for further assistance."
+    ws.Cells(U_BODY, 3).Value = "Same placeholders. Alt+Enter = new line. Outlook adds your signature if it is set to add it to new mails."
+
+    ws.Range(ws.Cells(U_TO, 1), ws.Cells(U_BODY, 1)).Font.Bold = True
+    ws.Range(ws.Cells(U_TO, 3), ws.Cells(U_BODY, 3)).Font.Italic = True
+    ws.Range(ws.Cells(U_TO, 3), ws.Cells(U_BODY, 3)).Font.Color = RGB(89, 89, 89)
+    ws.Range(ws.Cells(U_TO, 2), ws.Cells(U_BODY, 2)).Interior.Color = RGB(255, 242, 204)
+    ws.Range(ws.Cells(U_TO, 2), ws.Cells(U_BODY, 2)).WrapText = True
+    ws.Rows(U_BODY).RowHeight = 110
+    ws.Columns(1).ColumnWidth = 16
+    ws.Columns(2).ColumnWidth = 90
+    ws.Columns(3).ColumnWidth = 50
     ws.Range("A:C").VerticalAlignment = xlTop
 End Sub
