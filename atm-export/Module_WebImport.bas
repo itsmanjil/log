@@ -21,6 +21,8 @@ Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}
 Private Const ARCHIVE_FOLDER As String = "ATM SWITCH DATA"  ' inside Downloads, today's files only
 Private Const MISSING_LABEL As String = "NOT IN SWITCH DATA"
 Private Const MAX_MISSING_SHARE As Double = 0.1  ' more missing than this = filtered export, mark none
+Private Const REMOVED_SHEET As String = "REMOVED ATMS"  ' terminals left out of every import (column A from row 4)
+Private Const REMOVED_FIRST_ROW As Long = 4
 
 Private mImportNote As String  ' what the last import did, shown to the user
 
@@ -73,6 +75,7 @@ Public Function ImportWebExportFile(ByVal exportFile As String) As Boolean
     Dim oldDisplayAlerts As Boolean
     Dim msg As String
     Dim wbSource As Workbook
+    Dim removed As Object
 
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
@@ -96,6 +99,10 @@ Public Function ImportWebExportFile(ByVal exportFile As String) As Boolean
     wbSource.Close SaveChanges:=False
     Set wbSource = Nothing
 
+    Set removed = RemovedAtms()
+    DropRemovedAtms ThisWorkbook.Worksheets("Raw Switch Data"), removed
+    DropRemovedAtms ThisWorkbook.Worksheets("PROBLEM IN ATM"), removed
+    RemoveFromTotal removed
     MarkAtmsMissingFromExport
     ArchiveExport exportFile
 
@@ -126,9 +133,9 @@ Private Sub MarkAtmsMissingFromExport()
     Dim wsRaw As Worksheet, wsTotal As Worksheet
     Dim present As Object
     Dim r As Long, tidCol As Long, headerRow As Long, lastRow As Long
-    Dim terminal As String, missingList As String
-    Dim totalCount As Long, missingCount As Long
-    Dim data As Variant
+    Dim terminal As String, missingList As String, newList As String, newNote As String
+    Dim totalCount As Long, missingCount As Long, newCount As Long, nameCol As Long
+    Dim data As Variant, onTotal As Object, key As Variant
 
     Set wsRaw = ThisWorkbook.Worksheets("Raw Switch Data")
     Set wsTotal = ThisWorkbook.Worksheets("TOTAL")
@@ -138,22 +145,28 @@ Private Sub MarkAtmsMissingFromExport()
         If tidCol > 0 Then Exit For
     Next headerRow
     If tidCol = 0 Then Exit Sub
+    nameCol = HeaderColumn(wsRaw, headerRow, "NAME")
 
-    Set present = CreateObject("Scripting.Dictionary")
+    Set present = CreateObject("Scripting.Dictionary")   ' terminal -> ATM name on the website
     present.CompareMode = 1
     lastRow = wsRaw.Cells(wsRaw.Rows.Count, tidCol).End(xlUp).Row
     For r = headerRow + 1 To lastRow
         terminal = TerminalOf(wsRaw.Cells(r, tidCol).Value)
-        If Len(terminal) > 0 Then present(terminal) = True
+        If Len(terminal) > 0 Then
+            If nameCol > 0 Then present(terminal) = Trim$(CStr(wsRaw.Cells(r, nameCol).Value)) Else present(terminal) = ""
+        End If
     Next r
 
     lastRow = wsTotal.Cells(wsTotal.Rows.Count, "B").End(xlUp).Row
     If lastRow < 2 Or present.Count = 0 Then Exit Sub
     data = wsTotal.Range("B2:H" & lastRow).Value  ' B terminal ... H remarks 2
 
+    Set onTotal = CreateObject("Scripting.Dictionary")
+    onTotal.CompareMode = 1
     For r = 1 To UBound(data, 1)
         terminal = TerminalOf(data(r, 1))
         If Len(terminal) > 0 Then
+            onTotal(terminal) = True
             totalCount = totalCount + 1
             If Not present.Exists(terminal) Then
                 missingCount = missingCount + 1
@@ -161,12 +174,30 @@ Private Sub MarkAtmsMissingFromExport()
             End If
         End If
     Next r
-    If missingCount = 0 Then Exit Sub
+
+    ' ATMs on the website that are not on TOTAL never reach the report: say so.
+    For Each key In present.Keys
+        If Not onTotal.Exists(key) Then
+            newCount = newCount + 1
+            If newCount <= 10 Then newList = newList & vbCrLf & "    " & key & "  " & present(key)
+        End If
+    Next key
+    If newCount > 0 Then
+        newNote = newCount & " ATM(s) on the website are not on the TOTAL list, so they are NOT in the report:" & newList & _
+                  IIf(newCount > 10, vbCrLf & "    ... and " & (newCount - 10) & " more", "") & vbCrLf & _
+                  "New ATM: add a row on TOTAL (terminal in column B, branch in C). " & _
+                  "ATM not used any more: type its terminal on the '" & REMOVED_SHEET & "' sheet."
+    End If
+
+    If missingCount = 0 Then
+        mImportNote = mImportNote & newNote
+        Exit Sub
+    End If
 
     If missingCount > totalCount * MAX_MISSING_SHARE Then
-        mImportNote = missingCount & " of " & totalCount & " ATMs on the TOTAL list are not in this export. " & _
+        mImportNote = mImportNote & missingCount & " of " & totalCount & " ATMs on the TOTAL list are not in this export. " & _
                       "That is too many to be deleted ATMs - was a filter on in the website?" & vbCrLf & _
-                      "They were left unchanged."
+                      "They were left unchanged." & vbCrLf & vbCrLf & newNote
         Exit Sub
     End If
 
@@ -187,9 +218,100 @@ Private Sub MarkAtmsMissingFromExport()
     On Error GoTo 0
     wsTotal.Range("B2:H" & lastRow).Value = data
 
-    mImportNote = missingCount & " ATM(s) on the TOTAL list are not on the website any more, so they are " & _
+    mImportNote = mImportNote & missingCount & " ATM(s) on the TOTAL list are not on the website any more, so they are " & _
                   "left out of CASH LOW IN ATM and ATM NOT WORKING:" & missingList & vbCrLf & vbCrLf & _
-                  "If an ATM was removed for good, delete its row from the TOTAL sheet."
+                  "If an ATM was removed for good, delete its row from the TOTAL sheet." & vbCrLf & vbCrLf & newNote
+End Sub
+
+' Terminals typed on the REMOVED ATMS sheet (made empty on first use).
+Private Function RemovedAtms() As Object
+    Dim ws As Worksheet, r As Long, t As String
+    Dim result As Object
+
+    Set result = CreateObject("Scripting.Dictionary")
+    result.CompareMode = 1
+    Set RemovedAtms = result
+    If Not HasSheet(ThisWorkbook, REMOVED_SHEET) Then CreateRemovedSheet
+    Set ws = ThisWorkbook.Worksheets(REMOVED_SHEET)
+    For r = REMOVED_FIRST_ROW To ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+        t = TerminalOf(ws.Cells(r, 1).Value)
+        If Len(t) > 0 Then result(t) = True
+    Next r
+End Function
+
+Public Sub CreateRemovedSheet()
+    Dim ws As Worksheet, wasActive As Object
+    If HasSheet(ThisWorkbook, REMOVED_SHEET) Then Exit Sub
+    Set wasActive = ActiveSheet
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    On Error Resume Next
+    wasActive.Activate          ' Add makes the new sheet active
+    On Error GoTo 0
+    ws.Name = REMOVED_SHEET
+    ws.Range("A1").Value = "REMOVED ATMS - left out of every website import and report"
+    ws.Range("A1").Font.Bold = True
+    ws.Range("A1").Font.Size = 13
+    ws.Range("A2").Value = "Type the terminal in column A (e.g. PRV12345). At each import its rows are dropped from " & _
+                           "Raw Switch Data and PROBLEM IN ATM and its TOTAL row is deleted. To bring it back: " & _
+                           "delete the line here and add the ATM to TOTAL again."
+    ws.Range("A2").Font.Italic = True
+    ws.Range("A3:C3").Value = Array("Terminal", "Branch / ATM", "Note (e.g. date removed, reason)")
+    With ws.Range("A3:C3")
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(31, 78, 120)
+    End With
+    ws.Range("A" & REMOVED_FIRST_ROW & ":C" & REMOVED_FIRST_ROW + 30).Interior.Color = RGB(255, 242, 204)
+    ws.Columns(1).ColumnWidth = 16
+    ws.Columns(2).ColumnWidth = 40
+    ws.Columns(3).ColumnWidth = 50
+End Sub
+
+' Deletes the rows of removed terminals from a sheet in the website-table layout.
+Private Sub DropRemovedAtms(ByVal ws As Worksheet, ByVal removed As Object)
+    Dim headerRow As Long, tidCol As Long, r As Long
+    If removed.Count = 0 Then Exit Sub
+    For headerRow = 1 To 10
+        tidCol = HeaderColumn(ws, headerRow, "TID (PID)")
+        If tidCol > 0 Then Exit For
+    Next headerRow
+    If tidCol = 0 Then Exit Sub
+    For r = ws.Cells(ws.Rows.Count, tidCol).End(xlUp).Row To headerRow + 1 Step -1
+        If removed.Exists(TerminalOf(ws.Cells(r, tidCol).Value)) Then ws.Rows(r).Delete
+    Next r
+End Sub
+
+' Deletes the TOTAL rows of removed terminals and numbers S.N (column A) again.
+Private Sub RemoveFromTotal(ByVal removed As Object)
+    Dim ws As Worksheet, r As Long, lastRow As Long, n As Long, sn As Long
+    Dim names As String, t As String
+
+    If removed.Count = 0 Then Exit Sub
+    Set ws = ThisWorkbook.Worksheets("TOTAL")
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    For r = lastRow To 2 Step -1
+        t = TerminalOf(ws.Cells(r, 2).Value)
+        If removed.Exists(t) Then
+            If n = 0 Then
+                On Error Resume Next
+                ws.Unprotect  ' the refresh protects it again
+                On Error GoTo 0
+            End If
+            names = vbCrLf & "    " & t & "  " & CStr(ws.Cells(r, 3).Value) & names
+            ws.Rows(r).Delete
+            n = n + 1
+        End If
+    Next r
+    If n = 0 Then Exit Sub
+
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    For r = 2 To lastRow
+        If Len(TerminalOf(ws.Cells(r, 2).Value)) > 0 Then
+            sn = sn + 1
+            ws.Cells(r, 1).Value = sn
+        End If
+    Next r
+    mImportNote = mImportNote & n & " ATM(s) on the '" & REMOVED_SHEET & "' sheet were deleted from TOTAL:" & names & vbCrLf & vbCrLf
 End Sub
 
 ' "PRV12345 (100001)" -> "PRV12345"; empty if not a PRV terminal.

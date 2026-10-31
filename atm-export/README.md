@@ -32,6 +32,10 @@ After importing, the file is moved to `Downloads\ATM SWITCH DATA`. That folder k
 older ones are deleted at the next import. (A browser bookmark is not allowed to choose where Chrome saves
 files, so the macro files them.)
 
+ATMs on the website but not on TOTAL are not in the report; the import message lists them (add a TOTAL row for a new ATM).
+Terminals typed on the **REMOVED ATMS** sheet (column A from row 4) are dropped from Raw Switch Data and PROBLEM IN ATM
+at every import and their TOTAL rows are deleted (S.N renumbered).
+
 ATMs deleted from the website are still on the TOTAL list. If 10% or fewer of the TOTAL ATMs are missing from the
 export, they are marked `NOT IN SWITCH DATA` on TOTAL, left out of CASH LOW IN ATM / ATM NOT WORKING, and listed in
 a message. Delete the row from TOTAL if the ATM was removed for good. If more are missing (a website filter was on)
@@ -39,7 +43,7 @@ nothing is marked.
 
 ## First real run: check these
 
-1. The "Exported" message: the ATM count should match the website (about 264) and the red count should match the red dots.
+1. The "Exported" message: the ATM count should match the website's own "FILTERED n ATM" number (the script reads that number every time; nothing is fixed) and the red count should match the red dots.
 2. Open the downloaded file once: **Raw Switch Data** row 2 should show `NAME`, `TID (PID)`, `NPR`, `DISPENSER`, and the balance and idle-time values should sit under those headings.
 3. After the report runs, compare CASH LOW IN ATM and ATM NOT WORKING with what your manual paste would give.
 
