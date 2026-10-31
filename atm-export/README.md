@@ -21,7 +21,10 @@ saves a file to Downloads; the macro only reads that file. Nothing is sent anywh
 ## Daily use
 
 1. On the ATM Monitoring page, show **all ATMs** (no filter), go to page 1 and click **Export ATMs**.
-   Wait until the message "Exported ... ATMs" appears (about 30 seconds; don't click the page meanwhile).
+   A banner shows progress and blocks clicks on the page until the message "Exported ... ATMs" appears.
+   Pages missed (120-second auto-refresh, slow page, lost click) are read again automatically, up to 3 rounds;
+   a much smaller ATM count than the last export asks whether a filter is on. Any unexpected problem ends with
+   a message (and the diagnostic file), never silently.
 2. In `DAILY_ATM_STATUS_V3.xlsm` click **Run 1 PM Report** (or 8 PM). The report is built exactly as before.
 
 An export made in the last 60 minutes is used without asking. An older one (or one not from today) asks first.
@@ -32,14 +35,11 @@ After importing, the file is moved to `Downloads\ATM SWITCH DATA`. That folder k
 older ones are deleted at the next import. (A browser bookmark is not allowed to choose where Chrome saves
 files, so the macro files them.)
 
-ATMs on the website but not on TOTAL are not in the report; the import message lists them (add a TOTAL row for a new ATM).
+TOTAL follows the website: at every import ATMs new on the website are added at the end of TOTAL (terminal + name,
+the refresh fills the figures; also added to ATM EMAIL) and ATMs no longer on the website are deleted, S.N renumbered.
+An export missing more than 10% of the TOTAL ATMs (filtered website) is refused - nothing is changed.
 Terminals typed on the **REMOVED ATMS** sheet (column A from row 4) are dropped from Raw Switch Data and PROBLEM IN ATM
 at every import and their TOTAL rows are deleted (S.N renumbered).
-
-ATMs deleted from the website are still on the TOTAL list. If 10% or fewer of the TOTAL ATMs are missing from the
-export, they are marked `NOT IN SWITCH DATA` on TOTAL, left out of CASH LOW IN ATM / ATM NOT WORKING, and listed in
-a message. Delete the row from TOTAL if the ATM was removed for good. If more are missing (a website filter was on)
-nothing is marked.
 
 ## First real run: check these
 

@@ -19,8 +19,7 @@ Private Const EXPORT_FILE_PATTERN As String = "ATM_SWITCH_DATA_*.xlsx"
 Private Const FRESH_MINUTES As Long = 60   ' newer files are imported without asking
 Private Const DOWNLOADS_GUID As String = "{374DE290-123F-4565-9164-39C4925E467B}"
 Private Const ARCHIVE_FOLDER As String = "ATM SWITCH DATA"  ' inside Downloads, today's files only
-Private Const MISSING_LABEL As String = "NOT IN SWITCH DATA"
-Private Const MAX_MISSING_SHARE As Double = 0.1  ' more missing than this = filtered export, mark none
+Private Const MAX_MISSING_SHARE As Double = 0.1  ' more TOTAL ATMs missing than this = filtered export, not imported
 Private Const REMOVED_SHEET As String = "REMOVED ATMS"  ' terminals left out of every import (column A from row 4)
 Private Const REMOVED_FIRST_ROW As Long = 4
 
@@ -39,6 +38,11 @@ Public Sub ImportWebDataOnly()
         MsgBox "Raw Switch Data and PROBLEM IN ATM updated from the website export file.", vbInformation
     End If
 End Sub
+
+' For checking: what the last import did (the message shown after it).
+Public Function LastImportNote() As String
+    LastImportNote = mImportNote
+End Function
 
 Private Function ImportWebExport() As Boolean
     Dim exportFile As String
@@ -92,6 +96,9 @@ Public Function ImportWebExportFile(ByVal exportFile As String) As Boolean
     ' Check the file before anything in this workbook is overwritten.
     msg = ExportProblem(wbSource)
     If Len(msg) > 0 Then Err.Raise vbObjectError + 701, , msg
+    Set removed = RemovedAtms()
+    msg = FilteredExportProblem(wbSource, removed)
+    If Len(msg) > 0 Then Err.Raise vbObjectError + 702, , msg
 
     mImportNote = vbNullString
     CopySheetValues wbSource.Worksheets("Raw Switch Data"), ThisWorkbook.Worksheets("Raw Switch Data")
@@ -99,11 +106,10 @@ Public Function ImportWebExportFile(ByVal exportFile As String) As Boolean
     wbSource.Close SaveChanges:=False
     Set wbSource = Nothing
 
-    Set removed = RemovedAtms()
     DropRemovedAtms ThisWorkbook.Worksheets("Raw Switch Data"), removed
     DropRemovedAtms ThisWorkbook.Worksheets("PROBLEM IN ATM"), removed
     RemoveFromTotal removed
-    MarkAtmsMissingFromExport
+    SyncTotalWithExport
     ArchiveExport exportFile
 
     Application.ScreenUpdating = oldScreenUpdating
@@ -124,104 +130,148 @@ SafeFail:
            vbExclamation, "Import Website Data"
 End Function
 
-' An ATM deleted from the website is still on the TOTAL list, and the refresh
-' keeps a TOTAL row's old values when its terminal is not in the new data - so
-' it would stay in CASH LOW IN ATM / ATM NOT WORKING with stale figures. Mark
-' such rows NOT IN SWITCH DATA (no cash / idle values) so the report skips
-' them. Skipped when many ATMs are missing: that means a filtered export.
-Private Sub MarkAtmsMissingFromExport()
-    Dim wsRaw As Worksheet, wsTotal As Worksheet
-    Dim present As Object
-    Dim r As Long, tidCol As Long, headerRow As Long, lastRow As Long
-    Dim terminal As String, missingList As String, newList As String, newNote As String
-    Dim totalCount As Long, missingCount As Long, newCount As Long, nameCol As Long
-    Dim data As Variant, onTotal As Object, key As Variant
+' TOTAL follows the website: ATMs on the website but not on TOTAL are added (terminal +
+' name; the refresh fills the figures), ATMs on TOTAL but no longer on the website are
+' deleted, S.N is numbered again. New ATMs are also added to ATM EMAIL if that sheet exists.
+' (A filtered export never gets this far: ImportWebExportFile stops when too many are missing.)
+Private Sub SyncTotalWithExport()
+    Dim wsTotal As Worksheet
+    Dim present As Object, onTotal As Object, key As Variant
+    Dim r As Long, lastRow As Long, sn As Long, added As Long, deleted As Long
+    Dim terminal As String, addedList As String, deletedList As String
 
-    Set wsRaw = ThisWorkbook.Worksheets("Raw Switch Data")
+    Set present = WebsiteAtms()
+    If present.Count = 0 Then Exit Sub
     Set wsTotal = ThisWorkbook.Worksheets("TOTAL")
-
-    For headerRow = 1 To 10
-        tidCol = HeaderColumn(wsRaw, headerRow, "TID (PID)")
-        If tidCol > 0 Then Exit For
-    Next headerRow
-    If tidCol = 0 Then Exit Sub
-    nameCol = HeaderColumn(wsRaw, headerRow, "NAME")
-
-    Set present = CreateObject("Scripting.Dictionary")   ' terminal -> ATM name on the website
-    present.CompareMode = 1
-    lastRow = wsRaw.Cells(wsRaw.Rows.Count, tidCol).End(xlUp).Row
-    For r = headerRow + 1 To lastRow
-        terminal = TerminalOf(wsRaw.Cells(r, tidCol).Value)
-        If Len(terminal) > 0 Then
-            If nameCol > 0 Then present(terminal) = Trim$(CStr(wsRaw.Cells(r, nameCol).Value)) Else present(terminal) = ""
-        End If
-    Next r
-
-    lastRow = wsTotal.Cells(wsTotal.Rows.Count, "B").End(xlUp).Row
-    If lastRow < 2 Or present.Count = 0 Then Exit Sub
-    data = wsTotal.Range("B2:H" & lastRow).Value  ' B terminal ... H remarks 2
-
-    Set onTotal = CreateObject("Scripting.Dictionary")
-    onTotal.CompareMode = 1
-    For r = 1 To UBound(data, 1)
-        terminal = TerminalOf(data(r, 1))
-        If Len(terminal) > 0 Then
-            onTotal(terminal) = True
-            totalCount = totalCount + 1
-            If Not present.Exists(terminal) Then
-                missingCount = missingCount + 1
-                missingList = missingList & vbCrLf & "    " & terminal & "  " & CStr(data(r, 2))
-            End If
-        End If
-    Next r
-
-    ' ATMs on the website that are not on TOTAL never reach the report: say so.
-    For Each key In present.Keys
-        If Not onTotal.Exists(key) Then
-            newCount = newCount + 1
-            If newCount <= 10 Then newList = newList & vbCrLf & "    " & key & "  " & present(key)
-        End If
-    Next key
-    If newCount > 0 Then
-        newNote = newCount & " ATM(s) on the website are not on the TOTAL list, so they are NOT in the report:" & newList & _
-                  IIf(newCount > 10, vbCrLf & "    ... and " & (newCount - 10) & " more", "") & vbCrLf & _
-                  "New ATM: add a row on TOTAL (terminal in column B, branch in C). " & _
-                  "ATM not used any more: type its terminal on the '" & REMOVED_SHEET & "' sheet."
-    End If
-
-    If missingCount = 0 Then
-        mImportNote = mImportNote & newNote
-        Exit Sub
-    End If
-
-    If missingCount > totalCount * MAX_MISSING_SHARE Then
-        mImportNote = mImportNote & missingCount & " of " & totalCount & " ATMs on the TOTAL list are not in this export. " & _
-                      "That is too many to be deleted ATMs - was a filter on in the website?" & vbCrLf & _
-                      "They were left unchanged." & vbCrLf & vbCrLf & newNote
-        Exit Sub
-    End If
-
-    For r = 1 To UBound(data, 1)
-        terminal = TerminalOf(data(r, 1))
-        If Len(terminal) > 0 Then
-            If Not present.Exists(terminal) Then
-                data(r, 3) = Empty           ' D cash balance
-                data(r, 4) = MISSING_LABEL   ' E last used
-                data(r, 5) = MISSING_LABEL   ' F remarks 1
-                data(r, 6) = Empty           ' G not working hours
-                data(r, 7) = MISSING_LABEL   ' H remarks 2
-            End If
-        End If
-    Next r
     On Error Resume Next
     wsTotal.Unprotect  ' the refresh protects it again
     On Error GoTo 0
-    wsTotal.Range("B2:H" & lastRow).Value = data
 
-    mImportNote = mImportNote & missingCount & " ATM(s) on the TOTAL list are not on the website any more, so they are " & _
-                  "left out of CASH LOW IN ATM and ATM NOT WORKING:" & missingList & vbCrLf & vbCrLf & _
-                  "If an ATM was removed for good, delete its row from the TOTAL sheet." & vbCrLf & vbCrLf & newNote
+    ' delete ATMs that are no longer on the website
+    Set onTotal = CreateObject("Scripting.Dictionary")
+    onTotal.CompareMode = 1
+    lastRow = wsTotal.Cells(wsTotal.Rows.Count, "B").End(xlUp).Row
+    For r = lastRow To 2 Step -1
+        terminal = TerminalOf(wsTotal.Cells(r, 2).Value)
+        If Len(terminal) > 0 Then
+            If present.Exists(terminal) And Not onTotal.Exists(terminal) Then
+                onTotal(terminal) = True
+            Else  ' gone from the website, or a second row for the same ATM
+                deleted = deleted + 1
+                If deleted <= 10 Then deletedList = vbCrLf & "    " & terminal & "  " & CStr(wsTotal.Cells(r, 3).Value) & deletedList
+                wsTotal.Rows(r).Delete
+            End If
+        End If
+    Next r
+
+    ' add ATMs that are new on the website, at the end (formatted like the row above)
+    lastRow = wsTotal.Cells(wsTotal.Rows.Count, "B").End(xlUp).Row
+    For Each key In present.Keys
+        If Not onTotal.Exists(key) Then
+            If lastRow >= 2 Then wsTotal.Rows(lastRow).Copy Destination:=wsTotal.Rows(lastRow + 1)
+            lastRow = lastRow + 1
+            wsTotal.Range(wsTotal.Cells(lastRow, 1), wsTotal.Cells(lastRow, 8)).ClearContents
+            wsTotal.Cells(lastRow, 2).Value = CStr(key)
+            wsTotal.Cells(lastRow, 3).Value = present(key)
+            added = added + 1
+            If added <= 10 Then addedList = addedList & vbCrLf & "    " & key & "  " & present(key)
+            AddToEmailSheet CStr(key), CStr(present(key))
+        End If
+    Next key
+
+    If added = 0 And deleted = 0 Then Exit Sub
+    For r = 2 To lastRow
+        If Len(TerminalOf(wsTotal.Cells(r, 2).Value)) > 0 Then
+            sn = sn + 1
+            wsTotal.Cells(r, 1).Value = sn
+        End If
+    Next r
+    If added > 0 Then mImportNote = mImportNote & "TOTAL list updated - " & added & " new ATM(s) from the website added:" & _
+        addedList & IIf(added > 10, vbCrLf & "    ... and " & (added - 10) & " more", "") & vbCrLf & vbCrLf
+    If deleted > 0 Then mImportNote = mImportNote & "TOTAL list updated - " & deleted & " ATM(s) no longer on the website deleted:" & _
+        deletedList & IIf(deleted > 10, vbCrLf & "    ... and " & (deleted - 10) & " more", "") & vbCrLf & _
+        "(If one was deleted by mistake it comes back by itself once it is on the website again.)" & vbCrLf & vbCrLf
+    mImportNote = mImportNote & "TOTAL now has " & sn & " ATMs."
 End Sub
+
+' Terminal -> ATM name of every ATM in Raw Switch Data.
+Private Function WebsiteAtms() As Object
+    Dim ws As Worksheet, result As Object
+    Dim headerRow As Long, tidCol As Long, nameCol As Long, r As Long
+    Dim terminal As String
+
+    Set result = CreateObject("Scripting.Dictionary")
+    result.CompareMode = 1
+    Set WebsiteAtms = result
+    Set ws = ThisWorkbook.Worksheets("Raw Switch Data")
+    For headerRow = 1 To 10
+        tidCol = HeaderColumn(ws, headerRow, "TID (PID)")
+        If tidCol > 0 Then Exit For
+    Next headerRow
+    If tidCol = 0 Then Exit Function
+    nameCol = HeaderColumn(ws, headerRow, "NAME")
+    For r = headerRow + 1 To ws.Cells(ws.Rows.Count, tidCol).End(xlUp).Row
+        terminal = TerminalOf(ws.Cells(r, tidCol).Value)
+        If Len(terminal) > 0 Then
+            If nameCol > 0 Then result(terminal) = Trim$(CStr(ws.Cells(r, nameCol).Value)) Else result(terminal) = ""
+        End If
+    Next r
+End Function
+
+' A new ATM also gets a row on ATM EMAIL (used by the mail buttons), if that sheet exists.
+Private Sub AddToEmailSheet(ByVal terminal As String, ByVal branch As String)
+    Const FIRST_ROW As Long = 12
+    Dim ws As Worksheet, r As Long, lastRow As Long
+    If Not HasSheet(ThisWorkbook, "ATM EMAIL") Then Exit Sub
+    Set ws = ThisWorkbook.Worksheets("ATM EMAIL")
+    If StrComp(Trim$(CStr(ws.Cells(FIRST_ROW - 1, 1).Value)), "Terminal", vbTextCompare) <> 0 Then Exit Sub
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    For r = FIRST_ROW To lastRow
+        If StrComp(Trim$(CStr(ws.Cells(r, 1).Value)), terminal, vbTextCompare) = 0 Then Exit Sub
+    Next r
+    If lastRow >= FIRST_ROW Then
+        ws.Rows(lastRow).Copy Destination:=ws.Rows(lastRow + 1)
+        ws.Rows(lastRow + 1).ClearContents
+    End If
+    ws.Cells(lastRow + 1, 1).Value = terminal
+    ws.Cells(lastRow + 1, 2).Value = branch
+End Sub
+
+' Empty string, or why the export looks filtered: more than MAX_MISSING_SHARE of the TOTAL
+' ATMs (not counting REMOVED ATMS) are not in it. Importing it would delete them from TOTAL.
+Private Function FilteredExportProblem(ByVal wb As Workbook, ByVal removed As Object) As String
+    Dim ws As Worksheet, wsTotal As Worksheet, inExport As Object
+    Dim headerRow As Long, tidCol As Long, r As Long, totalCount As Long, missing As Long
+    Dim terminal As String
+
+    Set ws = wb.Worksheets("Raw Switch Data")
+    For headerRow = 1 To 10
+        tidCol = HeaderColumn(ws, headerRow, "TID (PID)")
+        If tidCol > 0 Then Exit For
+    Next headerRow
+    If tidCol = 0 Then Exit Function
+    Set inExport = CreateObject("Scripting.Dictionary")
+    inExport.CompareMode = 1
+    For r = headerRow + 1 To ws.Cells(ws.Rows.Count, tidCol).End(xlUp).Row
+        terminal = TerminalOf(ws.Cells(r, tidCol).Value)
+        If Len(terminal) > 0 Then inExport(terminal) = True
+    Next r
+
+    Set wsTotal = ThisWorkbook.Worksheets("TOTAL")
+    For r = 2 To wsTotal.Cells(wsTotal.Rows.Count, "B").End(xlUp).Row
+        terminal = TerminalOf(wsTotal.Cells(r, 2).Value)
+        If Len(terminal) > 0 And Not removed.Exists(terminal) Then
+            totalCount = totalCount + 1
+            If Not inExport.Exists(terminal) Then missing = missing + 1
+        End If
+    Next r
+    If missing > totalCount * MAX_MISSING_SHARE Then
+        FilteredExportProblem = "This export has " & inExport.Count & " ATMs, but " & missing & " of the " & totalCount & _
+            " ATMs on the TOTAL list are not in it - a filter was probably on in the website." & vbCrLf & _
+            "On the ATM Monitoring page remove every filter (show ALL ATMs) and click Export ATMs again." & vbCrLf & _
+            "(If that many ATMs really were removed, delete them from TOTAL yourself: Review > Unprotect Sheet.)"
+    End If
+End Function
 
 ' Terminals typed on the REMOVED ATMS sheet (made empty on first use).
 Private Function RemovedAtms() As Object
